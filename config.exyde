@@ -1,0 +1,16 @@
+project = "exyde"
+version = "0.1.0"
+
+architecture = "x86_64"
+platform = "qemu"
+
+kernel = "src/kernel"
+
+bootloader = "grub"
+
+build.target = "kernel"
+
+features.modules = true
+features.networking = false
+features.posix = false
+features.linux_compat = false

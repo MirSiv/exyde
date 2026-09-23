@@ -1,0 +1,9 @@
+build/
+*.o
+*.elf
+*.iso
+
+/EXYDE.md
+/EXYDE_PHASES.md
+/EXYDE_STATE.md
+/initial_prompt.txt
