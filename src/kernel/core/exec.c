@@ -163,10 +163,15 @@ process_t *process_spawn(const char *name,
 
     /* Close the preemption window between enqueue and t->process = p. */
     u64 flags = arch_irqs_save_and_disable();
+    /* Thread owns one reference to the space.  process_destroy drops
+     * the process's reference; free_thread drops the thread's. */
+    vmm_space_ref(p->space);
     thread_t *t = thread_create_ex(user_thread_entry, p, name, p->space);
     if (t) {
         t->process      = p;
         p->main_thread  = t;
+    } else {
+        vmm_space_unref(p->space);
     }
     arch_irqs_restore(flags);
 

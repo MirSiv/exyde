@@ -103,6 +103,9 @@ static void free_thread(thread_t *t) {
             process_destroy(p);
         }
     }
+    /* Drop the thread's own reference to the address space.  For
+     * kernel-space threads this is a no-op. */
+    if (t->space) vmm_space_unref(t->space);
     if (t->stack_base) kfree((void *)(uintptr_t)t->stack_base);
     kfree(t);
 }

@@ -83,7 +83,7 @@ static void pmm_selftest(void) {
 
 static void vmm_selftest(void) {
     vmm_space_t ks = vmm_kernel_space();
-    if (ks == 0) panic("vmm test: no space");
+    if (!ks) panic("vmm test: no space");
     paddr_t p = pmm_alloc_page();
     vaddr_t va = KERNEL_VA_BASE + 0x1000;
     if (!vmm_map(ks, va, p, VM_PRESENT | VM_WRITE)) panic("vmm: map failed");
@@ -427,6 +427,9 @@ static void ring3_syscall_selftest(void) {
     user_test_hit = 0;
     user_test_rax = 0;
 
+    /* Thread owns one reference to the space; process_destroy below
+     * drops the process's reference. */
+    vmm_space_ref(p->space);
     thread_t *t = thread_create_ex(user_thread_entry, p, "r3", p->space);
     if (!t) panic("ring3 test: thread create failed");
     t->process = p;

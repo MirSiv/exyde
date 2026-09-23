@@ -9,17 +9,17 @@ static u64 next_pid = 1;
 process_t *process_create_from_elf(const char *name,
                                    const void *elf, size_t size) {
     vmm_space_t space = vmm_create();
-    if (space == 0) return (process_t *)0;
+    if (!space) return (process_t *)0;
 
     elf_image_t img;
     if (!elf_load(space, elf, size, &img)) {
-        vmm_destroy(space);
+        vmm_space_unref(space);
         return (process_t *)0;
     }
 
     process_t *p = (process_t *)kzalloc(sizeof(process_t));
     if (!p) {
-        vmm_destroy(space);
+        vmm_space_unref(space);
         return (process_t *)0;
     }
 
@@ -38,6 +38,6 @@ process_t *process_create_from_elf(const char *name,
 void process_destroy(process_t *p) {
     if (!p) return;
     fd_table_destroy(&p->fds);
-    vmm_destroy(p->space);
+    vmm_space_unref(p->space);
     kfree(p);
 }

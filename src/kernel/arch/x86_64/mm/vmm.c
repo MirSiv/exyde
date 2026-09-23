@@ -1,10 +1,9 @@
 #include <exyde/vmm.h>
 #include <exyde/pmm.h>
+#include <exyde/heap.h>
 #include <exyde/panic.h>
 
 extern u8 __boot_pml4[];
-extern u8 __boot_pdpt[];
-extern u8 __boot_pd[];
 
 #define PTE_PRESENT   (1ull << 0)
 #define PTE_WRITE     (1ull << 1)
@@ -14,7 +13,15 @@ extern u8 __boot_pd[];
 #define PTE_HUGE      (1ull << 7)
 #define PTE_ADDR_MASK 0x000FFFFFFFFFF000ull
 
-static inline u64 *pml4_of(vmm_space_t s) { return (u64 *)s; }
+/* Singleton for the bootstrap (kernel) address space.  pml4 is filled
+ * on first use because __boot_pml4 is a linker symbol, not a constant
+ * expression.  All current callers run single-threaded during boot. */
+static struct vmm_space kernel_space;
+static int kernel_space_ready;
+
+static inline u64 *pml4_of(vmm_space_t s) {
+    return (u64 *)(uintptr_t)s->pml4;
+}
 
 static inline size_t idx_pml4(vaddr_t va) { return (size_t)((va >> 39) & 0x1FF); }
 static inline size_t idx_pdpt(vaddr_t va) { return (size_t)((va >> 30) & 0x1FF); }
@@ -51,7 +58,7 @@ static u64 *descend_or_alloc(u64 *table, size_t idx, bool child_user) {
     }
     paddr_t np = pmm_alloc_page();
     if (np == 0) return (u64 *)0;
-    u64 *child = (u64 *)np;
+    u64 *child = (u64 *)(uintptr_t)np;
     zero_page(child);
     u64 flags = PTE_PRESENT | PTE_WRITE;
     if (child_user) flags |= PTE_USER;
@@ -60,19 +67,32 @@ static u64 *descend_or_alloc(u64 *table, size_t idx, bool child_user) {
 }
 
 vmm_space_t vmm_kernel_space(void) {
-    return (vmm_space_t)(u64)__boot_pml4;
+    if (!kernel_space_ready) {
+        kernel_space.pml4      = (paddr_t)(uintptr_t)__boot_pml4;
+        kernel_space.refcount  = 0xFFFFFFFFu;
+        kernel_space.is_kernel = 1;
+        kernel_space_ready     = 1;
+    }
+    return &kernel_space;
 }
 
 vmm_space_t vmm_create(void) {
+    struct vmm_space *s = (struct vmm_space *)kzalloc(sizeof(*s));
+    if (!s) return (vmm_space_t)0;
+
     paddr_t np = pmm_alloc_page();
-    if (np == 0) return 0;
-    u64 *new_pml4 = (u64 *)np;
+    if (np == 0) { kfree(s); return (vmm_space_t)0; }
+
+    u64 *new_pml4 = (u64 *)(uintptr_t)np;
     zero_page(new_pml4);
 
-    const u64 *kpml4 = pml4_of(vmm_kernel_space());
+    const u64 *kpml4 = (const u64 *)(uintptr_t)vmm_kernel_space()->pml4;
     for (size_t i = 0; i < 512; ++i) new_pml4[i] = kpml4[i];
 
-    return (vmm_space_t)np;
+    s->pml4      = np;
+    s->refcount  = 1;
+    s->is_kernel = 0;
+    return s;
 }
 
 static void free_pt(u64 *pt) {
@@ -82,7 +102,7 @@ static void free_pt(u64 *pt) {
         if (e & PTE_HUGE) continue;
         pmm_free_page(e & PTE_ADDR_MASK);
     }
-    pmm_free_page((paddr_t)pt);
+    pmm_free_page((paddr_t)(uintptr_t)pt);
 }
 
 static void free_pd(u64 *pd) {
@@ -92,7 +112,7 @@ static void free_pd(u64 *pd) {
         if (e & PTE_HUGE) { pmm_free_page(e & PTE_ADDR_MASK); continue; }
         free_pt((u64 *)(e & PTE_ADDR_MASK));
     }
-    pmm_free_page((paddr_t)pd);
+    pmm_free_page((paddr_t)(uintptr_t)pd);
 }
 
 static void free_pdpt(u64 *pdpt) {
@@ -102,13 +122,13 @@ static void free_pdpt(u64 *pdpt) {
         if (e & PTE_HUGE) { pmm_free_page(e & PTE_ADDR_MASK); continue; }
         free_pd((u64 *)(e & PTE_ADDR_MASK));
     }
-    pmm_free_page((paddr_t)pdpt);
+    pmm_free_page((paddr_t)(uintptr_t)pdpt);
 }
 
-void vmm_destroy(vmm_space_t space) {
-    if (space == 0) return;
-    if (space == vmm_kernel_space()) return;
-
+/* Only called from vmm_space_unref when refcount reaches zero, on a
+ * non-kernel space.  Frees PML4[1..511] subtree, the PML4 page, and
+ * the struct itself.  PML4[0] is shared with the kernel. */
+static void destroy_space(vmm_space_t space) {
     u64 *pml4 = pml4_of(space);
     for (size_t i = 1; i < 512; ++i) {
         u64 e = pml4[i];
@@ -116,11 +136,27 @@ void vmm_destroy(vmm_space_t space) {
         if (e & PTE_HUGE) { pmm_free_page(e & PTE_ADDR_MASK); continue; }
         free_pdpt((u64 *)(e & PTE_ADDR_MASK));
     }
-    pmm_free_page(space);
+    pmm_free_page(space->pml4);
+    kfree(space);
+}
+
+void vmm_space_ref(vmm_space_t space) {
+    if (!space) return;
+    if (space->is_kernel) return;
+    space->refcount++;
+}
+
+void vmm_space_unref(vmm_space_t space) {
+    if (!space) return;
+    if (space->is_kernel) return;
+    if (space->refcount == 0) return;   /* defensive: never destroy twice */
+    space->refcount--;
+    if (space->refcount == 0) destroy_space(space);
 }
 
 void vmm_switch(vmm_space_t s) {
-    __asm__ volatile("mov %0, %%cr3" :: "r"(s) : "memory");
+    if (!s) return;
+    __asm__ volatile("mov %0, %%cr3" :: "r"(s->pml4) : "memory");
 }
 
 void vmm_flush(vaddr_t va) {
@@ -128,7 +164,7 @@ void vmm_flush(vaddr_t va) {
 }
 
 static u64 *walk_leaf(vmm_space_t space, vaddr_t va) {
-    if (space == 0) return (u64 *)0;
+    if (!space) return (u64 *)0;
     u64 *pml4 = pml4_of(space);
 
     u64 e = pml4[idx_pml4(va)];
@@ -146,11 +182,11 @@ static u64 *walk_leaf(vmm_space_t space, vaddr_t va) {
 }
 
 static vaddr_t lower_bound(vmm_space_t space) {
-    return (space == vmm_kernel_space()) ? KERNEL_VA_BASE : USER_VA_BASE;
+    return space->is_kernel ? KERNEL_VA_BASE : USER_VA_BASE;
 }
 
 bool vmm_map(vmm_space_t space, vaddr_t va, paddr_t pa, u32 flags) {
-    if (space == 0) return false;
+    if (!space) return false;
     if (va & (PAGE_SIZE - 1)) return false;
     if (pa & (PAGE_SIZE - 1)) return false;
     if (va < lower_bound(space)) return false;
@@ -175,6 +211,7 @@ bool vmm_map(vmm_space_t space, vaddr_t va, paddr_t pa, u32 flags) {
 }
 
 bool vmm_unmap(vmm_space_t space, vaddr_t va) {
+    if (!space) return false;
     if (va & (PAGE_SIZE - 1)) return false;
     if (va < lower_bound(space)) return false;
 
@@ -190,6 +227,7 @@ bool vmm_unmap(vmm_space_t space, vaddr_t va) {
 }
 
 bool vmm_query(vmm_space_t space, vaddr_t va, paddr_t *out_pa, u32 *out_flags) {
+    if (!space) return false;
     if (va & (PAGE_SIZE - 1)) return false;
 
     u64 *pt = walk_leaf(space, va);

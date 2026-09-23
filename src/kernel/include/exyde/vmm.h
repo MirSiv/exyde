@@ -8,8 +8,17 @@
 #define VM_USER      (1u << 2)
 #define VM_NOCACHE   (1u << 3)
 
-/* An address space is identified by the physical address of its PML4. */
-typedef paddr_t vmm_space_t;
+/* An address space.  Refcounted: a process owns one reference, and
+ * each thread that has been given the space holds its own reference.
+ * The kernel space is a special singleton with is_kernel = 1; both
+ * vmm_space_ref and vmm_space_unref are no-ops on it. */
+typedef struct vmm_space *vmm_space_t;
+
+struct vmm_space {
+    paddr_t pml4;
+    u32     refcount;
+    u32     is_kernel;
+};
 
 /* Lower bound of the kernel dynamic VA range (heap, future kernel
  * mappings).  Below this lies the bootstrap identity map. */
@@ -19,20 +28,15 @@ typedef paddr_t vmm_space_t;
  * mappings can never touch the kernel's PML4[0] subtree. */
 #define USER_VA_BASE    0x0000008000000000ULL
 
-/* The kernel address space (bootstrap page tables). */
+/* The kernel address space (bootstrap page tables).  Always non-NULL. */
 vmm_space_t vmm_kernel_space(void);
 
 /* Create a new address space that shares the kernel PML4[0] subtree
- * with the kernel space.  Returns 0 on failure. */
+ * with the kernel space.  Returns NULL on failure.  Refcount starts
+ * at 1; the caller owns that reference. */
 vmm_space_t vmm_create(void);
 
-/* Destroy an address space created by vmm_create: frees all leaf
- * pages and intermediate tables in PML4[1..511] and the PML4 itself.
- * PML4[0] is shared with the kernel and is left alone.  Passing the
- * kernel space is a no-op. */
-void vmm_destroy(vmm_space_t space);
-
-/* Load `space` into CR3. */
+/* Load space->pml4 into CR3.  Passing NULL is a no-op. */
 void vmm_switch(vmm_space_t space);
 
 /* Map / unmap / query a single 4 KiB page.  va and pa must be 4 KiB
@@ -45,5 +49,14 @@ bool vmm_query(vmm_space_t space, vaddr_t va, paddr_t *out_pa, u32 *out_flags);
 
 /* Invalidate the TLB entry for `va` in the current address space. */
 void vmm_flush(vaddr_t va);
+
+/* Refcount management.  vmm_space_ref bumps the count; vmm_space_unref
+ * drops it and, at zero, frees all leaf pages and intermediate tables
+ * in PML4[1..511] plus the PML4 page and the struct itself.  PML4[0]
+ * is shared with the kernel and is left alone.
+ *
+ * Both functions are no-ops for the kernel space. */
+void vmm_space_ref(vmm_space_t space);
+void vmm_space_unref(vmm_space_t space);
 
 #endif /* EXYDE_VMM_H */
