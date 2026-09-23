@@ -10,6 +10,7 @@
 #include <exyde/fd.h>
 #include <exyde/handle.h>
 #include <exyde/arch.h>
+#include <exyde/uaccess.h>
 #include <exyde/panic.h>
 
 /* ---- small helpers -------------------------------------------------- */
@@ -32,27 +33,11 @@ static bool map_user_stack(vmm_space_t space, vaddr_t stack_top, u32 pages) {
     return true;
 }
 
-/* Write bytes to a user VA.  The user pages are reached through the
- * bootstrap identity map, which covers [0, 1 GiB) -- exactly the range
- * PMM hands out. */
+/* Copy bytes to a user VA.  The caller must have switched CR3 to
+ * `space` for the duration of the build (see exec_build_initial_stack). */
 static bool write_user_bytes(vmm_space_t space, vaddr_t va,
                              const void *src, size_t n) {
-    const u8 *s = (const u8 *)src;
-    while (n > 0) {
-        paddr_t pa;
-        u32 flags;
-        vaddr_t page = va & ~(vaddr_t)(PAGE_SIZE - 1);
-        if (!vmm_query(space, page, &pa, &flags)) return false;
-        u64 page_off = va & (vaddr_t)(PAGE_SIZE - 1);
-        size_t chunk = PAGE_SIZE - page_off;
-        if (chunk > n) chunk = n;
-        u8 *dst = (u8 *)(uintptr_t)(pa + page_off);
-        for (size_t i = 0; i < chunk; ++i) dst[i] = s[i];
-        s += chunk;
-        va += chunk;
-        n -= chunk;
-    }
-    return true;
+    return copy_to_user(space, va, src, n) == 0;
 }
 
 static bool push_u64(vmm_space_t space, vaddr_t *rsp, u64 v) {
@@ -76,16 +61,24 @@ u64 exec_build_initial_stack(vmm_space_t space, vaddr_t stack_top,
                              int envc, const char *const *envp) {
     if (argc < 0 || argc > EXEC_MAX_ARGS) return 0;
     if (envc < 0 || envc > EXEC_MAX_ENVS) return 0;
+    if (!space) return 0;
+
+    /* copy_to_user dereferences user VAs in the current address space,
+     * so switch CR3 to the target for the duration of the build. */
+    vmm_space_t prev = thread_current()->space;
+    bool need_switch = (prev != space);
+    if (need_switch) vmm_switch(space);
 
     vaddr_t rsp = stack_top;
     vaddr_t argv_va[EXEC_MAX_ARGS];
     vaddr_t envp_va[EXEC_MAX_ENVS];
+    u64 result = 0;
 
     /* 1. Push strings first (high to low). */
     for (int i = envc - 1; i >= 0; --i)
-        if (!push_string(space, &rsp, envp[i], &envp_va[i])) return 0;
+        if (!push_string(space, &rsp, envp[i], &envp_va[i])) goto out;
     for (int i = argc - 1; i >= 0; --i)
-        if (!push_string(space, &rsp, argv[i], &argv_va[i])) return 0;
+        if (!push_string(space, &rsp, argv[i], &argv_va[i])) goto out;
 
     /* 2. Align down to 16 bytes.  This stays at or below rsp, so it
      *    can never overlap the strings we just pushed above. */
@@ -96,16 +89,20 @@ u64 exec_build_initial_stack(vmm_space_t space, vaddr_t stack_top,
      *    = argc + envc + 3 (plus optional pad below).
      *    Final RSP is 16-aligned iff the slot count is even. */
     if (((argc + envc + 3) & 1) == 1)
-        if (!push_u64(space, &rsp, 0)) return 0;             /* pad */
-    if (!push_u64(space, &rsp, 0)) return 0;                 /* envp NULL */
+        if (!push_u64(space, &rsp, 0)) goto out;             /* pad */
+    if (!push_u64(space, &rsp, 0)) goto out;                 /* envp NULL */
     for (int i = envc - 1; i >= 0; --i)
-        if (!push_u64(space, &rsp, (u64)envp_va[i])) return 0;
-    if (!push_u64(space, &rsp, 0)) return 0;                 /* argv NULL */
+        if (!push_u64(space, &rsp, (u64)envp_va[i])) goto out;
+    if (!push_u64(space, &rsp, 0)) goto out;                 /* argv NULL */
     for (int i = argc - 1; i >= 0; --i)
-        if (!push_u64(space, &rsp, (u64)argv_va[i])) return 0;
-    if (!push_u64(space, &rsp, (u64)argc)) return 0;
+        if (!push_u64(space, &rsp, (u64)argv_va[i])) goto out;
+    if (!push_u64(space, &rsp, (u64)argc)) goto out;
 
-    return (u64)rsp;
+    result = (u64)rsp;
+
+out:
+    if (need_switch) vmm_switch(prev);
+    return result;
 }
 
 /* ---- spawn ---------------------------------------------------------- */
