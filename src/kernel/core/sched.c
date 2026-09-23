@@ -3,9 +3,12 @@
 #include <exyde/arch.h>
 #include <exyde/vmm.h>
 #include <exyde/user.h>
+#include <exyde/heap.h>
+#include <exyde/process.h>
 #include <exyde/panic.h>
 
 #define SCHED_QUANTUM_TICKS 5u
+#define BOOT_STACK_SIZE     (16u * 1024u)
 
 extern void thread_switch(u64 *from_rsp, u64 *to_rsp);
 
@@ -15,15 +18,24 @@ static thread_t      *current;
 static size_t         ready_count;
 static volatile int   need_resched;
 
+/* Zombie list: threads that called thread_exit.  They are not freed
+ * until another thread is running on the CPU, so we never kfree the
+ * stack we are currently executing on. */
+static thread_t      *zombie_head;
+static thread_t      *zombie_tail;
+
+/* Real kernel stack for the boot/idle thread. */
+static u8 boot_stack[BOOT_STACK_SIZE] __attribute__((aligned(16)));
+static thread_t boot_thread;
+
 void sched_init(void) {
-    static thread_t boot_thread;
     boot_thread.rsp              = 0;
     boot_thread.state            = THREAD_RUNNING;
     boot_thread.id               = 0;
     boot_thread.ticks_used       = 0;
     boot_thread.stack_base       = 0;
     boot_thread.stack_size       = 0;
-    boot_thread.kernel_stack_top = 0;
+    boot_thread.kernel_stack_top = (vaddr_t)(uintptr_t)(boot_stack + sizeof(boot_stack));
     boot_thread.space            = vmm_kernel_space();
     boot_thread.process          = (void *)0;
     boot_thread.entry            = (thread_fn_t)0;
@@ -37,6 +49,8 @@ void sched_init(void) {
     ready_tail   = (thread_t *)0;
     ready_count  = 0;
     need_resched = 0;
+    zombie_head  = (thread_t *)0;
+    zombie_tail  = (thread_t *)0;
 }
 
 thread_t *thread_current(void) {
@@ -68,6 +82,46 @@ size_t sched_ready_count(void) {
     return ready_count;
 }
 
+/* ---- zombie handling ------------------------------------------------ */
+
+static void zombie_push(thread_t *t) {
+    t->next = (thread_t *)0;
+    if (zombie_tail) {
+        zombie_tail->next = t;
+        zombie_tail = t;
+    } else {
+        zombie_head = zombie_tail = t;
+    }
+}
+
+static void free_thread(thread_t *t) {
+    /* If this is the main thread of a user process, tear the process
+     * down with it.  Today every process has exactly one thread. */
+    if (t->process) {
+        process_t *p = (process_t *)t->process;
+        if (p->main_thread == t) {
+            process_destroy(p);
+        }
+    }
+    if (t->stack_base) kfree((void *)(uintptr_t)t->stack_base);
+    kfree(t);
+}
+
+/* Runs on the newly-current thread's stack.  Any zombie is guaranteed
+ * not to be the one on the CPU, so all of them can be freed. */
+static void reap_zombies(void) {
+    thread_t *z = zombie_head;
+    zombie_head = zombie_tail = (thread_t *)0;
+    while (z) {
+        thread_t *nxt = z->next;
+        z->next = (thread_t *)0;
+        free_thread(z);
+        z = nxt;
+    }
+}
+
+/* ---- scheduling ----------------------------------------------------- */
+
 static void sched_schedule(void) {
     thread_t *prev = current;
     thread_t *next = ready_dequeue();
@@ -92,6 +146,9 @@ static void sched_schedule(void) {
     }
 
     thread_switch(&prev->rsp, &next->rsp);
+
+    /* We are now running on next's stack: any zombie is safe to free. */
+    reap_zombies();
 }
 
 void sched_yield(void) {
@@ -122,6 +179,7 @@ void sched_preempt_point(void) {
 void thread_exit(void) {
     arch_irqs_disable();
     current->state = THREAD_DEAD;
+    zombie_push(current);
     sched_schedule();
     panic("thread_exit: returned");
 }
@@ -129,7 +187,6 @@ void thread_exit(void) {
 void sched_block(void) {
     current->state = THREAD_BLOCKED;
     sched_schedule();
-    /* On return, IRQs are still disabled (as they were on entry). */
 }
 
 void sched_unblock(thread_t *t) {

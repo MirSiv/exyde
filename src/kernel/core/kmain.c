@@ -574,16 +574,23 @@ static void userspace_selftest(void) {
     int argc = 1;
     int envc = 1;
 
+    u64 before = pmm_free_page_count();
+
     process_t *init = process_spawn("init",
                                     exyde_init_elf, exyde_init_elf_size,
                                     argc, argv, envc, envp);
     if (!init) panic("userspace test: spawn init failed");
 
-    console_write("userspace: spawned init pid=");
-    console_write_hex(init->pid);
-    console_write("\n");
+    kprintf("userspace: spawned init pid=%u, pmm free before=%u\n",
+            (u32)init->pid, (u32)before);
 
     for (int i = 0; i < 1000; ++i) sched_yield();
+
+    u64 after = pmm_free_page_count();
+    kprintf("userspace: after reaper, pmm free=%u\n", (u32)after);
+
+    if (after < before)
+        panic("userspace test: reaper leaked pages");
 
     console_write("userspace test: OK (init spawned, ran, exited)\n");
 }
