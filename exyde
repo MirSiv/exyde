@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Exyde project shortcut.  Launches tools/exyde-tool.py from anywhere.
+set -e
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+exec python3 "$HERE/tools/exyde-tool.py" "$@"
