@@ -7,9 +7,13 @@
 #include <exyde/process.h>
 #include <exyde/fd.h>
 #include <exyde/vfs.h>
+#include <exyde/uaccess.h>
 #include <exyde/panic.h>
 
-/* ---- helpers -------------------------------------------------------- */
+/* One-shot kernel bounce buffer for SYS_READ / SYS_WRITE.  Bigger
+ * requests are rejected with -EINVAL — a proper streaming design will
+ * come with a real FS that can hand out page-aligned I/O. */
+#define SYSCALL_IO_MAX  4096u
 
 static process_t *current_process(void) {
     thread_t *t = thread_current();
@@ -17,7 +21,7 @@ static process_t *current_process(void) {
     return (process_t *)t->process;
 }
 
-/* ---- old ABI (unchanged) -------------------------------------------- */
+/* ---- handles (unchanged) ------------------------------------------- */
 
 static sysret_t sys_ping(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
     (void)a1; (void)a2; (void)a3; (void)a4;
@@ -60,7 +64,7 @@ static sysret_t sys_handle_query(u64 h, u64 required, u64 a2, u64 a3, u64 a4) {
     return 1;
 }
 
-/* ---- new ABI (Phase 10) --------------------------------------------- */
+/* ---- fd syscalls --------------------------------------------------- */
 
 static sysret_t sys_write(u64 fd, u64 buf_u, u64 count,
                           u64 a3, u64 a4) {
@@ -71,11 +75,15 @@ static sysret_t sys_write(u64 fd, u64 buf_u, u64 count,
     file_t *f = fd_get(&p->fds, (int)fd);
     if (!f) return SYSRET_ERR(EBADF);
     if (count == 0) return 0;
-    if (buf_u < USER_VA_BASE) return SYSRET_ERR(EFAULT);
+    if (count > SYSCALL_IO_MAX) return SYSRET_ERR(EINVAL);
 
-    i64 r = vfs_write(f, (const void *)(uintptr_t)buf_u, (size_t)count);
-    if (r < 0) return SYSRET_ERR((u64)-r);
-    return (sysret_t)r;
+    u8 kbuf[SYSCALL_IO_MAX];
+    if (copy_from_user(p->space, kbuf, (vaddr_t)buf_u, (size_t)count) < 0)
+        return SYSRET_ERR(EFAULT);
+
+    i64 w = vfs_write(f, kbuf, (size_t)count);
+    if (w < 0) return SYSRET_ERR((u64)-w);
+    return (sysret_t)w;
 }
 
 static sysret_t sys_read(u64 fd, u64 buf_u, u64 count,
@@ -87,10 +95,14 @@ static sysret_t sys_read(u64 fd, u64 buf_u, u64 count,
     file_t *f = fd_get(&p->fds, (int)fd);
     if (!f) return SYSRET_ERR(EBADF);
     if (count == 0) return 0;
-    if (buf_u < USER_VA_BASE) return SYSRET_ERR(EFAULT);
+    if (count > SYSCALL_IO_MAX) return SYSRET_ERR(EINVAL);
 
-    i64 r = vfs_read(f, (void *)(uintptr_t)buf_u, (size_t)count);
+    u8 kbuf[SYSCALL_IO_MAX];
+    i64 r = vfs_read(f, kbuf, (size_t)count);
     if (r < 0) return SYSRET_ERR((u64)-r);
+
+    if (copy_to_user(p->space, (vaddr_t)buf_u, kbuf, (size_t)r) < 0)
+        return SYSRET_ERR(EFAULT);
     return (sysret_t)r;
 }
 
@@ -99,9 +111,11 @@ static sysret_t sys_open(u64 path_u, u64 flags, u64 mode,
     (void)a3; (void)a4;
     process_t *p = current_process();
     if (!p) return SYSRET_ERR(EPERM);
-    if (path_u < USER_VA_BASE) return SYSRET_ERR(EFAULT);
 
-    const char *path = (const char *)(uintptr_t)path_u;
+    char path[VFS_PATH_MAX + 1];
+    int sr = strncpy_from_user(p->space, path, (vaddr_t)path_u, sizeof(path));
+    if (sr < 0) return SYSRET_ERR((u64)-sr);
+
     file_t *f = (file_t *)0;
     int r = vfs_open(path, (u32)flags, (u32)mode, &f);
     if (r < 0) return SYSRET_ERR((u64)-r);
@@ -142,7 +156,7 @@ static sysret_t sys_getpid(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
     return (sysret_t)p->pid;
 }
 
-/* ---- dispatch ------------------------------------------------------- */
+/* ---- dispatch ------------------------------------------------------ */
 
 typedef sysret_t (*syscall_fn_t)(u64, u64, u64, u64, u64);
 

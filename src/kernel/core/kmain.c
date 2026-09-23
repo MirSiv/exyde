@@ -23,9 +23,11 @@
 #include <exyde/condev.h>
 #include <exyde/exec.h>
 #include <exyde/init_elf.h>
+#include <exyde/uaccess.h>
 #include <exyde/vfs.h>
 #include <exyde/ramfs.h>
 #include <exyde/fd.h>
+#include <exyde/uaccess.h>
 
 extern char __bss_start[];
 extern char __bss_end[];
@@ -595,6 +597,25 @@ static void userspace_selftest(void) {
     console_write("userspace test: OK (init spawned, ran, exited)\n");
 }
 
+
+static void uaccess_selftest(void) {
+    vmm_space_t space = vmm_kernel_space();
+    if (user_range_ok(space, USER_VA_BASE, 8) == 0)
+        panic("uaccess test: kernel space accepted user range");
+    if (user_range_ok(space, 0, 8) == 0)
+        panic("uaccess test: NULL accepted");
+    if (user_range_ok(space, USER_VA_TOP - 4, 8) == 0)
+        panic("uaccess test: range crossing top accepted");
+    if (user_range_ok(space, USER_VA_TOP, 8) == 0)
+        panic("uaccess test: range above top accepted");
+    if (user_range_ok(space, USER_VA_BASE, (size_t)-1) == 0)
+        panic("uaccess test: wrap-around accepted");
+    if (user_range_ok(space, USER_VA_BASE, 0) != 0)
+        panic("uaccess test: zero-length rejected");
+
+    console_write("uaccess test: OK (range bounds, wrap, zero-len)\n");
+}
+
 void kmain(u32 magic, u64 mb_info_addr) {
     zero_bss();
     arch_init();
@@ -654,6 +675,7 @@ void kmain(u32 magic, u64 mb_info_addr) {
     syscall_arch_init();
     ring3_syscall_selftest();
     userspace_selftest();
+    uaccess_selftest();
 
     console_write("idle: entering hlt loop\n");
 

@@ -50,6 +50,7 @@ C_SRCS := \
     core/condev.c \
     core/exec.c \
     core/init_elf.c \
+    core/uaccess.c \
     arch/x86_64/boot/multiboot2.c \
     arch/x86_64/cpu/arch.c \
     arch/x86_64/cpu/console.c \
