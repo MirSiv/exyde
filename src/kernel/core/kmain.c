@@ -78,7 +78,7 @@ static void pmm_selftest(void) {
     paddr_t c = pmm_alloc_pages(8);
     if (c == 0) panic("pmm test: alloc_pages(8) failed");
     if (!pmm_free_pages(c, 8)) panic("pmm test: free_pages failed");
-    console_write("pmm test: OK\n");
+    console_ok("pmm test: OK\n");
 }
 
 static void vmm_selftest(void) {
@@ -92,7 +92,7 @@ static void vmm_selftest(void) {
     if (*slot != 0x1122334455667788ULL) panic("vmm: readback");
     if (!vmm_unmap(ks, va)) panic("vmm: unmap failed");
     pmm_free_page(p);
-    console_write("vmm test: OK\n");
+    console_ok("vmm test: OK\n");
 }
 
 static void heap_selftest(void) {
@@ -103,7 +103,7 @@ static void heap_selftest(void) {
     if (!b) panic("heap test: kzalloc failed");
     for (int i = 0; i < 64; ++i) if (b[i] != 0) panic("heap test: kzalloc nonzero");
     kfree(a); kfree(b);
-    console_write("heap test: OK\n");
+    console_ok("heap test: OK\n");
 }
 
 static void handle_selftest(void) {
@@ -125,7 +125,7 @@ static void handle_selftest(void) {
     if (handle_close(&t, h1))  panic("handle: double close accepted");
     if (handle_lookup(&t, h1, HANDLE_RIGHT_READ, &obj, &kind)) panic("handle: lookup after close");
     handle_close(&t, h2);
-    console_write("handle test: OK (create, lookup, rights, close)\n");
+    console_ok("handle test: OK (create, lookup, rights, close)\n");
 }
 
 static volatile int worker_done = 0;
@@ -148,7 +148,7 @@ static void sched_selftest(void) {
         if (worker_done >= 2) break;
     }
     if (worker_done < 2) panic("sched test: workers not finished");
-    console_write("sched test: OK\n");
+    console_ok("sched test: OK\n");
 }
 
 /* ---- Phase 8.1 synchronization self-test ----------------------------- */
@@ -284,7 +284,7 @@ static void channel_selftest(void) {
     channel_destroy(test_chan);
     test_chan = (channel_t *)0;
 
-    console_write("channel test: OK (try_send, try_recv, blocking, order, sum)\n");
+    console_ok("channel test: OK (try_send, try_recv, blocking, order, sum)\n");
 }
 
 static void sync_selftest(void) {
@@ -306,9 +306,11 @@ static void sync_selftest(void) {
         console_write("\n");
         panic("sync test: mutex counter mismatch");
     }
+    console_set_color(CONSOLE_COLOR_GREEN);
     console_write("mutex test: OK (");
     console_write_hex(mx_counter);
     console_write(" increments under contention)\n");
+    console_reset_color();
 
     /* --- semaphore as binary mutex --- */
     sem_init(&sm, 1);
@@ -326,9 +328,11 @@ static void sync_selftest(void) {
         console_write("\n");
         panic("sync test: sem counter mismatch");
     }
+    console_set_color(CONSOLE_COLOR_GREEN);
     console_write("semaphore test: OK (");
     console_write_hex(sm_counter);
     console_write(" increments under contention)\n");
+    console_reset_color();
 
     /* --- condvar --- */
     mutex_init(&cv_m);
@@ -347,7 +351,7 @@ static void sync_selftest(void) {
     if (!cv_waiter_done || !cv_signaler_done) {
         panic("sync test: condvar timeout");
     }
-    console_write("condvar test: OK (wait/signal handshake)\n");
+    console_ok("condvar test: OK (wait/signal handshake)\n");
 }
 
 /* ---- Test ELF: mov edi,0x42; mov eax,0; syscall; int3; hlt ------------ */
@@ -450,7 +454,7 @@ static void ring3_syscall_selftest(void) {
         panic("ring3 test: unexpected page delta on destroy");
     }
 
-    console_write("ring3 test: OK (SYSCALL from CPL3, arg passing, ping round-trip)\n");
+    console_ok("ring3 test: OK (SYSCALL from CPL3, arg passing, ping round-trip)\n");
 }
 
 /* ---- Phase 9: VFS / RAMFS / fd self-test ----------------------------- */
@@ -523,7 +527,7 @@ static void vfs_selftest(void) {
     if (vfs_unlink("/tmp/inner") < 0) panic("vfs test: unlink inner");
     if (vfs_rmdir("/tmp") < 0)        panic("vfs test: rmdir empty");
 
-    console_write("vfs test: OK (mkdir, create, write, read, seek, readdir, unlink, rmdir)\n");
+    console_ok("vfs test: OK (mkdir, create, write, read, seek, readdir, unlink, rmdir)\n");
 }
 
 static void fd_selftest(void) {
@@ -565,7 +569,7 @@ static void fd_selftest(void) {
     if (vfs_unlink("/fdtest/c") < 0) panic("fd test: unlink c");
     if (vfs_rmdir("/fdtest") < 0) panic("fd test: rmdir");
 
-    console_write("fd test: OK (alloc, get, close, reuse lowest, table destroy)\n");
+    console_ok("fd test: OK (alloc, get, close, reuse lowest, table destroy)\n");
 }
 
 static void userspace_selftest(void) {
@@ -594,7 +598,7 @@ static void userspace_selftest(void) {
     if (after < before)
         panic("userspace test: reaper leaked pages");
 
-    console_write("userspace test: OK (init spawned, ran, exited)\n");
+    console_ok("userspace test: OK (init spawned, ran, exited)\n");
 }
 
 
@@ -629,14 +633,14 @@ static void uaccess_selftest(void) {
             panic("uaccess test: extable to_user did not return -EFAULT");
     }
 
-    console_write("uaccess test: OK (range bounds, wrap, zero-len, extable)\n");
+    console_ok("uaccess test: OK (range bounds, wrap, zero-len, extable)\n");
 }
 
 void kmain(u32 magic, u64 mb_info_addr) {
     zero_bss();
     arch_init();
 
-    console_write("Exyde kernel: alive\n");
+    console_banner("Exyde kernel: alive\n");
 
     if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) panic("invalid multiboot2 magic");
     console_write("multiboot2 magic OK\n");
@@ -674,7 +678,7 @@ void kmain(u32 magic, u64 mb_info_addr) {
     timer_init(TIMER_HZ);
     arch_irqs_enable();
 
-    console_write("timer: 100 Hz, preemptive\n");
+    console_notice("timer: 100 Hz, preemptive\n");
     sched_selftest();
     sync_selftest();
     channel_selftest();
@@ -693,7 +697,7 @@ void kmain(u32 magic, u64 mb_info_addr) {
     userspace_selftest();
     uaccess_selftest();
 
-    console_write("idle: entering hlt loop\n");
+    console_notice("idle: entering hlt loop\n");
 
     for (;;) {
         __asm__ volatile("hlt");
