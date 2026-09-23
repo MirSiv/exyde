@@ -30,6 +30,15 @@ SECTIONS
         *(.rodata .rodata.*)
     }
 
+    /* Kernel exception table: { u64 fault_rip; u64 fixup_rip; } pairs.
+     * Consumed by extable_lookup() in core/extable.c. */
+    .extable : ALIGN(16)
+    {
+        __extable_start = .;
+        KEEP(*(.extable))
+        __extable_end = .;
+    }
+
     .data : ALIGN(4K)
     {
         *(.data .data.*)

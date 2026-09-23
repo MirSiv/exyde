@@ -51,6 +51,7 @@ C_SRCS := \
     core/exec.c \
     core/init_elf.c \
     core/uaccess.c \
+    core/extable.c \
     arch/x86_64/boot/multiboot2.c \
     arch/x86_64/cpu/arch.c \
     arch/x86_64/cpu/console.c \
@@ -70,7 +71,8 @@ ASM_SRCS := \
     arch/x86_64/cpu/isr_stubs.asm \
     arch/x86_64/cpu/switch.asm \
     arch/x86_64/cpu/enter_user.asm \
-    arch/x86_64/cpu/syscall.asm
+    arch/x86_64/cpu/syscall.asm \
+    arch/x86_64/cpu/uaccess_asm.asm
 
 C_OBJS   := $(patsubst %.c,$(OBJDIR)/%.o,$(C_SRCS))
 ASM_OBJS := $(patsubst %.asm,$(OBJDIR)/%.o,$(ASM_SRCS))

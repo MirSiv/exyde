@@ -3,6 +3,7 @@
 #include <exyde/panic.h>
 #include <exyde/irq.h>
 #include <exyde/user.h>
+#include <exyde/extable.h>
 #include <arch/x86_64/isr.h>
 
 #define DECL_STUB(n) extern void isr_stub_##n(void)
@@ -75,11 +76,28 @@ static void dump_and_panic(struct regs *r) {
     panic("unhandled CPU exception");
 }
 
+/* Try to recover a kernel-mode #PF (vector 14) via the extable.
+ * Returns true if RIP was rewritten to a fixup and execution should
+ * resume via iretq.  The fixup label is expected to set RAX = -EFAULT
+ * and return to the original C caller. */
+static bool try_kernel_extable(struct regs *r) {
+    u64 fixup = 0;
+    if (!extable_lookup(r->rip, &fixup)) return false;
+    r->rip = fixup;
+    return true;
+}
+
 void isr_dispatch(struct regs *r) {
     u64 n = r->int_no;
 
     if (n < 32) {
-        if ((r->cs & 3u) == 3u) {
+        bool from_user = (r->cs & 3u) == 3u;
+
+        if (!from_user && n == 14) {
+            if (try_kernel_extable(r)) return;
+        }
+
+        if (from_user) {
             if (user_fault_handler) {
                 user_fault_t f;
                 f.int_no   = r->int_no;

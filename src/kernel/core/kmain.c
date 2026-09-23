@@ -613,7 +613,23 @@ static void uaccess_selftest(void) {
     if (user_range_ok(space, USER_VA_BASE, 0) != 0)
         panic("uaccess test: zero-length rejected");
 
-    console_write("uaccess test: OK (range bounds, wrap, zero-len)\n");
+    /* Extable path: in the kernel address space, PML4[1] is absent,
+     * so a direct deref at USER_VA_BASE traps with #PF.  The raw
+     * uaccess primitives must catch it via .extable and return
+     * -EFAULT without panicking.  This bypasses user_range_ok on
+     * purpose -- we are unit-testing the fault-recovery mechanism,
+     * i.e. the second half of the TOCTOU window. */
+    {
+        extern int uaccess_memcpy_from_user(void *kdst, const void *usrc, size_t n);
+        extern int uaccess_memcpy_to_user  (void *udst, const void *ksrc, size_t n);
+        char buf[8] = {0};
+        if (uaccess_memcpy_from_user(buf, (const void *)USER_VA_BASE, 8) != -EFAULT)
+            panic("uaccess test: extable from_user did not return -EFAULT");
+        if (uaccess_memcpy_to_user((void *)USER_VA_BASE, buf, 8) != -EFAULT)
+            panic("uaccess test: extable to_user did not return -EFAULT");
+    }
+
+    console_write("uaccess test: OK (range bounds, wrap, zero-len, extable)\n");
 }
 
 void kmain(u32 magic, u64 mb_info_addr) {
