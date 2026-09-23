@@ -5,10 +5,13 @@ OBJDIR     := $(BUILD)/obj
 KERNEL     := $(BUILD)/exyde-kernel.elf
 ISO        := $(BUILD)/exyde.iso
 ISODIR     := $(BUILD)/iso
+INIT_ELF   := $(BUILD)/init.elf
+INIT_OBJ   := $(OBJDIR)/init_elf.o
 
-CC := gcc
-AS := nasm
-LD := ld
+CC      := gcc
+AS      := nasm
+LD      := ld
+OBJCOPY := objcopy
 
 CFLAGS := \
     -std=c17 -ffreestanding -O2 -g \
@@ -49,7 +52,6 @@ C_SRCS := \
     core/fd.c \
     core/condev.c \
     core/exec.c \
-    core/init_elf.c \
     core/uaccess.c \
     core/extable.c \
     arch/x86_64/boot/multiboot2.c \
@@ -76,7 +78,7 @@ ASM_SRCS := \
 
 C_OBJS   := $(patsubst %.c,$(OBJDIR)/%.o,$(C_SRCS))
 ASM_OBJS := $(patsubst %.asm,$(OBJDIR)/%.o,$(ASM_SRCS))
-OBJS     := $(ASM_OBJS) $(C_OBJS)
+OBJS     := $(ASM_OBJS) $(C_OBJS) $(INIT_OBJ)
 
 .PHONY: all iso run clean
 
@@ -90,6 +92,21 @@ $(OBJDIR)/%.o: %.c
 $(OBJDIR)/%.o: %.asm
 	@mkdir -p $(@D)
 	$(AS) $(ASFLAGS) $< -o $@
+
+# Embed the userspace ELF as a byte array.  We cd to $(ROOT_DIR)
+# first so that objcopy mangles the relative path `build/init.elf`
+# into stable symbol names, regardless of where make was invoked.
+$(INIT_OBJ): $(INIT_ELF)
+	@mkdir -p $(@D)
+	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    build/init.elf build/obj/init_elf.o
+
+# Fallback: if init.elf is missing, ask the userspace Makefile to
+# build it.  In normal flow the top-level Makefile builds userspace
+# before invoking us, so this only fires for direct `make -C
+# src/kernel` invocations.
+$(INIT_ELF):
+	$(MAKE) -C $(ROOT_DIR)/src/userspace
 
 $(KERNEL): $(OBJS) $(KERNEL_DIR)/linker/x86_64.ld
 	@mkdir -p $(@D)
