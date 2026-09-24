@@ -29,6 +29,7 @@ process_t *process_create_from_elf(const char *name,
     p->image       = img;
     p->main_thread = (thread_t *)0;
     p->initial_rsp = 0;
+    p->brk         = (vaddr_t)(img.load_base + img.load_size);
     handle_table_init(&p->handles);
     fd_table_init(&p->fds);
 

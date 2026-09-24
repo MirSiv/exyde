@@ -30,8 +30,9 @@
 #define SYS_CLOSE          8
 #define SYS_LSEEK          9
 #define SYS_GETPID         10
+#define SYS_BRK            11
 
-#define SYSCALL_MAX        11
+#define SYSCALL_MAX        12
 
 /* ---- errno values ------------------------------------------------- */
 /* Linux-compatible, so Phase 17 translation is trivial. */

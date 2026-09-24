@@ -19,6 +19,8 @@ int     close(int fd);
 off_t   lseek(int fd, off_t offset, int whence);
 pid_t   getpid(void);
 
+void   *sbrk(long increment);
+
 void    _exit(int status) __attribute__((noreturn));
 
 #endif /* EXYDE_USERSPACE_UNISTD_H */

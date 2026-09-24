@@ -144,7 +144,7 @@ process_t *process_spawn(const char *name,
         return (process_t *)0;
     }
 
-    vaddr_t stack_top = USER_VA_BASE + 0x00100000ULL;
+    vaddr_t stack_top = USER_STACK_TOP_INIT;
     if (!map_user_stack(p->space, stack_top, EXEC_STACK_PAGES)) {
         process_destroy(p);
         return (process_t *)0;

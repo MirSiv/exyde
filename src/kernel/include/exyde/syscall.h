@@ -16,8 +16,9 @@
 #define SYS_CLOSE          8    /* (fd)                     -> 0            */
 #define SYS_LSEEK          9    /* (fd, off, whence)        -> new offset  */
 #define SYS_GETPID         10   /* ()                       -> pid          */
+#define SYS_BRK            11   /* (new_brk)                -> brk          */
 
-#define SYSCALL_MAX        11
+#define SYSCALL_MAX        12
 
 /* Called from the arch syscall entry (ring 0, on the current thread's
  * kernel stack, IF enabled).  Returns a signed value: >=0 success,

@@ -1,5 +1,6 @@
 #include <unistd.h>
 #include <errno.h>
+#include <stdint.h>
 #include <exyde/abi.h>
 #include "internal/syscall.h"
 
@@ -39,6 +40,18 @@ off_t lseek(int fd, off_t offset, int whence) {
 pid_t getpid(void) {
     long r = __exyde_syscall(SYS_GETPID, 0, 0, 0, 0, 0);
     return (pid_t)posix_ret(r);
+}
+
+void *sbrk(long increment) {
+    long cur = __exyde_syscall(SYS_BRK, 0, 0, 0, 0, 0);
+    if (cur < 0) { errno = (int)-cur; return (void *)-1; }
+    if (increment == 0) return (void *)(uintptr_t)cur;
+    long want = cur + increment;
+    if (want < cur) { errno = ENOMEM; return (void *)-1; }
+    long got = __exyde_syscall(SYS_BRK, (unsigned long)want, 0, 0, 0, 0);
+    if (got < 0) { errno = (int)-got; return (void *)-1; }
+    if (got != want) { errno = ENOMEM; return (void *)-1; }
+    return (void *)(uintptr_t)cur;
 }
 
 void _exit(int status) {

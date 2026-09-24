@@ -380,7 +380,6 @@ static const u8 test_elf_syscall[] = {
     0xF4,
 };
 
-#define USER_STACK_TOP  (USER_VA_BASE + 0x00100000ULL)
 #define PING_ARG0       0x0000000000000042ULL
 #define PING_EXPECTED   (0xDEADBEEFCAFE0000ULL ^ PING_ARG0)
 

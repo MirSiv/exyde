@@ -8,6 +8,8 @@
 #include <exyde/fd.h>
 #include <exyde/vfs.h>
 #include <exyde/uaccess.h>
+#include <exyde/pmm.h>
+#include <exyde/exec.h>
 #include <exyde/panic.h>
 
 /* One-shot kernel bounce buffer for SYS_READ / SYS_WRITE.  Bigger
@@ -156,6 +158,52 @@ static sysret_t sys_getpid(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
     return (sysret_t)p->pid;
 }
 
+static sysret_t sys_brk(u64 new_brk, u64 a1, u64 a2, u64 a3, u64 a4) {
+    (void)a1; (void)a2; (void)a3; (void)a4;
+    process_t *p = current_process();
+    if (!p) return SYSRET_ERR(EPERM);
+
+    /* Query form: brk(0) returns the current program break. */
+    if (new_brk == 0) return (sysret_t)p->brk;
+
+    vaddr_t target = (vaddr_t)new_brk;
+    vaddr_t cur    = p->brk;
+
+    /* Shrinking is not supported in 11.0.3.  Return the current
+     * value so the caller can detect that nothing changed. */
+    if (target <= cur) return (sysret_t)cur;
+    if (target >= USER_VA_TOP)    return SYSRET_ERR(ENOMEM);
+    if (target >  USER_BRK_MAX)   return SYSRET_ERR(ENOMEM);
+
+    vaddr_t cur_page = (cur    + PAGE_SIZE - 1) & ~((vaddr_t)PAGE_SIZE - 1);
+    vaddr_t tgt_page = (target + PAGE_SIZE - 1) & ~((vaddr_t)PAGE_SIZE - 1);
+
+    vaddr_t mapped = cur_page;
+    for (vaddr_t va = cur_page; va < tgt_page; va += PAGE_SIZE) {
+        paddr_t pa = pmm_alloc_page();
+        if (!pa) goto fail;
+        if (!vmm_map(p->space, va, pa, VM_PRESENT | VM_WRITE | VM_USER)) {
+            pmm_free_page(pa);
+            goto fail;
+        }
+        mapped = va + PAGE_SIZE;
+    }
+
+    p->brk = target;
+    return (sysret_t)target;
+
+fail:
+    /* Roll back everything mapped by this call. */
+    for (vaddr_t va = cur_page; va < mapped; va += PAGE_SIZE) {
+        paddr_t pa = 0;
+        if (vmm_query(p->space, va, &pa, (u32 *)0)) {
+            vmm_unmap(p->space, va);
+            pmm_free_page(pa);
+        }
+    }
+    return SYSRET_ERR(ENOMEM);
+}
+
 /* ---- dispatch ------------------------------------------------------ */
 
 typedef sysret_t (*syscall_fn_t)(u64, u64, u64, u64, u64);
@@ -172,6 +220,7 @@ static const syscall_fn_t syscall_table[SYSCALL_MAX] = {
     [SYS_CLOSE]         = sys_close,
     [SYS_LSEEK]         = sys_lseek,
     [SYS_GETPID]        = sys_getpid,
+    [SYS_BRK]           = sys_brk,
 };
 
 sysret_t syscall_dispatch(u64 nr, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
