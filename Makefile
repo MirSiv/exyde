@@ -1,11 +1,17 @@
 # Exyde top-level Makefile.
 # Real work is delegated to subsystem Makefiles.
+#
+# Typical flows:
+#   make                # build userspace, kernel, ISO
+#   make run            # build everything and boot QEMU
+#   make clean          # remove build/
+#   make clean && make  # full rebuild from scratch, one command
 
-.PHONY: all kernel user iso run clean
+.PHONY: all user userspace kernel iso run clean
 
 all: iso
 
-user:
+user userspace:
 	$(MAKE) -C src/userspace
 
 kernel: user
@@ -18,5 +24,4 @@ run: iso
 	$(MAKE) -C src/kernel run
 
 clean:
-	$(MAKE) -C src/userspace clean
-	$(MAKE) -C src/kernel clean
+	rm -rf $(CURDIR)/build
