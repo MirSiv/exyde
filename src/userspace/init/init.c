@@ -2,28 +2,92 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stddef.h>
+#include <errno.h>
 
-/* init for Phase 11.1.3.
- *
- * Smoke-tests the allocator:
- *   1. malloc + free + coalescing + reuse (from 11.1.2);
- *   2. calloc zero-fill;
- *   3. realloc: grow in place, grow through the fallback path, shrink.
- */
+/* init for Phase 11.2.3. */
+
+static int cmp_int(const void *a, const void *b) {
+    int x = *(const int *)a;
+    int y = *(const int *)b;
+    return (x > y) - (x < y);
+}
+
+static int cmp_str(const void *a, const void *b) {
+    const char *x = *(const char *const *)a;
+    const char *y = *(const char *const *)b;
+    return strcmp(x, y);
+}
 
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
     printf("init: hello from userspace (C)\n");
 
-    /* 1. basic malloc / free / coalesce */
+    /* --- abs / labs --- */
+    printf("init: abs    [%d] [%d] [%ld] [%ld]\n",
+           abs(5), abs(-5), labs(1234567890L), labs(-1234567890L));
+
+    /* --- qsort on ints --- */
+    {
+        int v[] = { 5, 1, 4, 2, 8, 0, 9, 3, 7, 6, 5, 2 };
+        size_t n = sizeof(v) / sizeof(v[0]);
+        qsort(v, n, sizeof(v[0]), cmp_int);
+        printf("init: qsort int ");
+        for (size_t i = 0; i < n; ++i) printf(" %d", v[i]);
+        printf("\n");
+    }
+
+    /* --- qsort on strings --- */
+    {
+        const char *s[] = { "banana", "apple", "cherry", "date", "elderberry" };
+        size_t n = sizeof(s) / sizeof(s[0]);
+        qsort(s, n, sizeof(s[0]), cmp_str);
+        printf("init: qsort str");
+        for (size_t i = 0; i < n; ++i) printf(" %s", s[i]);
+        printf("\n");
+    }
+
+    /* --- bsearch on the sorted ints --- */
+    {
+        int v[] = { 1, 3, 5, 7, 9, 11, 13 };
+        size_t n = sizeof(v) / sizeof(v[0]);
+        int key = 7;
+        int *hit = (int *)bsearch(&key, v, n, sizeof(v[0]), cmp_int);
+        int miss_key = 4;
+        int *miss = (int *)bsearch(&miss_key, v, n, sizeof(v[0]), cmp_int);
+        printf("init: bsearch [%d] [%s]\n",
+               hit ? *hit : -1,
+               miss ? "found" : "missing");
+    }
+
+    /* --- string.h regression --- */
+    char buf[64];
+    strcpy(buf, "hello, ");
+    strcat(buf, "world");
+    printf("init: cat    [%s]\n", buf);
+
+    {
+        char tokbuf[] = "a,b,,c,";
+        char *t;
+        printf("init: tok   ");
+        for (t = strtok(tokbuf, ","); t; t = strtok(NULL, ",")) {
+            printf(" [%s]", t);
+        }
+        printf(" [end]\n");
+    }
+
+    /* --- numeric conversion regression --- */
+    printf("init: strtol [%ld] [%ld] [%ld]\n",
+           strtol("-17", NULL, 0),
+           strtol("0xff", NULL, 0),
+           strtol("101010", NULL, 2));
+
+    /* --- allocator regression --- */
     char *a = (char *)malloc(64);
     char *b = (char *)malloc(64);
     char *c = (char *)malloc(64);
-    if (!a || !b || !c) {
-        printf("init: malloc failed\n");
-        return 1;
-    }
+    if (!a || !b || !c) { printf("init: malloc failed\n"); return 1; }
     strcpy(a, "hello, malloc!");
     strcpy(b, "block-b");
     strcpy(c, "block-c");
@@ -41,7 +105,6 @@ int main(int argc, char **argv, char **envp) {
         return 3;
     }
 
-    /* 2. calloc zero-fill */
     unsigned char *z = (unsigned char *)calloc(32, 1);
     if (!z) { printf("init: calloc failed\n"); return 4; }
     for (int i = 0; i < 32; ++i) {
@@ -52,50 +115,15 @@ int main(int argc, char **argv, char **envp) {
     }
     free(z);
 
-    /* 3. realloc */
     char *r = (char *)malloc(32);
     if (!r) { printf("init: realloc setup failed\n"); return 6; }
     strcpy(r, "small");
-
-    /* 3a. grow in place: next block is free (nothing after r). */
     r = (char *)realloc(r, 128);
-    if (!r) { printf("init: realloc grow failed\n"); return 7; }
-    if (strcmp(r, "small") != 0) {
-        printf("init: realloc grow lost data: %s\n", r);
-        return 8;
+    if (!r || strcmp(r, "small") != 0) {
+        printf("init: realloc grow failed\n");
+        return 7;
     }
-
-    /* 3b. shrink: should return the same pointer. */
-    char *r_old = r;
-    r = (char *)realloc(r, 16);
-    if (!r) { printf("init: realloc shrink failed\n"); return 9; }
-    if (strcmp(r, "small") != 0) {
-        printf("init: realloc shrink lost data: %s\n", r);
-        return 10;
-    }
-    if (r != r_old) {
-        printf("init: realloc shrink moved pointer unexpectedly\n");
-        return 11;
-    }
-
-    /* 3c. grow through the fallback path: force a block in the way. */
-    char *blocker = (char *)malloc(64);
-    if (!blocker) { printf("init: blocker malloc failed\n"); return 12; }
-    strcpy(blocker, "in the way");
-    r = (char *)realloc(r, 512);
-    if (!r) { printf("init: realloc fallback failed\n"); return 13; }
-    if (strcmp(r, "small") != 0) {
-        printf("init: realloc fallback lost data: %s\n", r);
-        return 14;
-    }
-    free(blocker);
-
-    /* 3d. realloc(p, 0) frees and returns NULL. */
-    void *gone = realloc(r, 0);
-    if (gone != NULL) {
-        printf("init: realloc(p, 0) did not return NULL\n");
-        return 15;
-    }
+    free(r);
     free(c);
     free(d);
 

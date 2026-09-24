@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -247,6 +248,278 @@ void *calloc(size_t nmemb, size_t size) {
     if (!p) return NULL;
     memset(p, 0, total);
     return p;
+}
+
+/* --- numeric conversion -------------------------------------------- */
+
+/* Character classification helpers, mirroring <ctype.h> without
+ * pulling a whole ctype into the libc yet. */
+static int is_space_(int c) {
+    return c == ' ' || c == '\t' || c == '\n' ||
+           c == '\v' || c == '\f' || c == '\r';
+}
+static int digit_val_(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'z') return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'Z') return 10 + (c - 'A');
+    return -1;
+}
+
+unsigned long strtoul(const char *s, char **endptr, int base) {
+    const char *p = s;
+
+    while (is_space_((unsigned char)*p)) ++p;
+
+    int negative = 0;
+    if (*p == '+' || *p == '-') {
+        negative = (*p == '-');
+        ++p;
+    }
+
+    if (base == 0) {
+        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+            base = 16;
+            p += 2;
+        } else if (p[0] == '0') {
+            base = 8;
+        } else {
+            base = 10;
+        }
+    } else if (base == 16) {
+        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    } else if (base < 2 || base > 36) {
+        if (endptr) *endptr = (char *)s;
+        errno = EINVAL;
+        return 0;
+    }
+
+    unsigned long acc = 0;
+    unsigned long cutoff = ULONG_MAX / (unsigned long)base;
+    unsigned long cutlim = ULONG_MAX % (unsigned long)base;
+    int overflow = 0;
+    int any = 0;
+
+    for (;;) {
+        int d = digit_val_((unsigned char)*p);
+        if (d < 0 || d >= base) break;
+        if (!overflow) {
+            if (acc > cutoff || (acc == cutoff && (unsigned long)d > cutlim)) {
+                overflow = 1;
+                errno = ERANGE;
+            } else {
+                acc = acc * (unsigned long)base + (unsigned long)d;
+            }
+        }
+        ++p;
+        any = 1;
+    }
+
+    if (endptr) *endptr = (char *)(any ? p : s);
+
+    if (overflow) return ULONG_MAX;
+    return negative ? (unsigned long)(-(long long)acc) : acc;
+}
+
+long strtol(const char *s, char **endptr, int base) {
+    /* Standalone parser: strtoul() returns the modular (two's-complement)
+     * value for negative inputs, so delegating to it here would misread
+     * "-17" as ULONG_MAX - 16 and trip the overflow check.  Parse the
+     * magnitude here and apply the sign with LONG_MIN / LONG_MAX bounds. */
+    const char *p = s;
+
+    while (is_space_((unsigned char)*p)) ++p;
+
+    int negative = 0;
+    if (*p == '+' || *p == '-') {
+        negative = (*p == '-');
+        ++p;
+    }
+
+    int effective_base = base;
+    if (effective_base == 0) {
+        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+            effective_base = 16;
+            p += 2;
+        } else if (p[0] == '0') {
+            effective_base = 8;
+        } else {
+            effective_base = 10;
+        }
+    } else if (effective_base == 16) {
+        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    } else if (effective_base < 2 || effective_base > 36) {
+        if (endptr) *endptr = (char *)s;
+        errno = EINVAL;
+        return 0;
+    }
+
+    /* Magnitude limit: LONG_MAX for positive, LONG_MAX + 1 for negative
+     * (so that LONG_MIN is representable). */
+    unsigned long limit = negative
+        ? (unsigned long)LONG_MAX + 1UL
+        : (unsigned long)LONG_MAX;
+    unsigned long cutoff = limit / (unsigned long)effective_base;
+    unsigned long cutlim = limit % (unsigned long)effective_base;
+
+    unsigned long acc = 0;
+    int overflow = 0;
+    int any = 0;
+
+    for (;;) {
+        int d = digit_val_((unsigned char)*p);
+        if (d < 0 || d >= effective_base) break;
+        if (!overflow) {
+            if (acc > cutoff || (acc == cutoff && (unsigned long)d > cutlim)) {
+                overflow = 1;
+            } else {
+                acc = acc * (unsigned long)effective_base + (unsigned long)d;
+            }
+        }
+        ++p;
+        any = 1;
+    }
+
+    if (endptr) *endptr = (char *)(any ? p : s);
+
+    if (overflow) {
+        errno = ERANGE;
+        return negative ? LONG_MIN : LONG_MAX;
+    }
+
+    if (negative) {
+        /* LONG_MIN is the only value where (long)(-acc) would be UB. */
+        if (acc == (unsigned long)LONG_MAX + 1UL) return LONG_MIN;
+        return -(long)acc;
+    }
+    return (long)acc;
+}
+
+int atoi(const char *s) {
+    return (int)strtol(s, (char **)0, 10);
+}
+
+long atol(const char *s) {
+    return strtol(s, (char **)0, 10);
+}
+
+/* --- integer arithmetic -------------------------------------------- */
+
+int abs(int j) {
+    return j < 0 ? -j : j;
+}
+
+long labs(long j) {
+    return j < 0 ? -j : j;
+}
+
+/* --- qsort / bsearch ----------------------------------------------- */
+
+/* Swap `size` bytes between a and b using a byte-wise temporary on the
+ * stack.  Callers guarantee size is small (an element, not a buffer). */
+static void swap_bytes(unsigned char *a, unsigned char *b, size_t size) {
+    while (size--) {
+        unsigned char t = *a;
+        *a++ = *b;
+        *b++ = t;
+    }
+}
+
+/* In-place quicksort.  Iterative with an explicit stack so we do not
+ * rely on recursion depth in userspace.  Median-of-three pivot choice
+ * keeps the common sorted/nearly-sorted cases reasonable. */
+void qsort(void *base, size_t nmemb, size_t size,
+           int (*compar)(const void *, const void *))
+{
+    if (nmemb < 2 || size == 0 || !compar) return;
+
+    unsigned char *lo = (unsigned char *)base;
+    unsigned char *hi = lo + (nmemb - 1) * size;
+
+    /* Stack of (lo, hi) ranges to process.  Each iteration consumes one
+     * range and may push two smaller ones.  Depth is bounded by the
+     * recursion depth of the same algorithm, which for median-of-three
+     * is O(log n) on average and O(n) only on adversarial inputs.  We
+     * cap it at 64 to stay safe; if we ever exceed it, the remaining
+     * range is sorted with an insertion-sort fallback below. */
+    struct range { unsigned char *lo; unsigned char *hi; };
+    struct range stack[64];
+    int sp = 0;
+    stack[sp].lo = lo;
+    stack[sp].hi = hi;
+    ++sp;
+
+    while (sp > 0) {
+        --sp;
+        unsigned char *l = stack[sp].lo;
+        unsigned char *h = stack[sp].hi;
+
+        /* Insertion-sort small ranges: cheap and avoids deep stacks. */
+        if ((size_t)((h - l) / size) < 8) {
+            for (unsigned char *i = l + size; i <= h; i += size) {
+                for (unsigned char *j = i; j > l; j -= size) {
+                    if (compar(j - size, j) <= 0) break;
+                    swap_bytes(j - size, j, size);
+                }
+            }
+            continue;
+        }
+
+        /* Median-of-three pivot. */
+        unsigned char *mid = l + ((size_t)((h - l) / size) / 2) * size;
+        if (compar(l, mid) > 0) swap_bytes(l, mid, size);
+        if (compar(l, h)   > 0) swap_bytes(l, h,   size);
+        if (compar(mid, h) > 0) swap_bytes(mid, h, size);
+        swap_bytes(mid, h - size, size);   /* move pivot next to hi */
+
+        unsigned char *pivot = h - size;
+        unsigned char *i = l;
+        unsigned char *j = h - size;
+
+        for (;;) {
+            while (i < j && compar(i, pivot) <= 0) i += size;
+            while (j > i && compar(j, pivot) >= 0) j -= size;
+            if (i >= j) break;
+            swap_bytes(i, j, size);
+            i += size;
+            if (j > l) j -= size;
+        }
+        /* Put pivot back into place. */
+        swap_bytes(i, pivot, size);
+
+        /* Push subranges.  If the stack would overflow, fall back to
+         * insertion sort on the whole range (never seen in practice). */
+        if (sp + 2 > 64) {
+            for (unsigned char *p = l + size; p <= h; p += size) {
+                for (unsigned char *q = p; q > l; q -= size) {
+                    if (compar(q - size, q) <= 0) break;
+                    swap_bytes(q - size, q, size);
+                }
+            }
+            continue;
+        }
+
+        if (i > l)      { stack[sp].lo = l;     stack[sp].hi = i - size; ++sp; }
+        if (i < h)      { stack[sp].lo = i + size; stack[sp].hi = h;     ++sp; }
+    }
+}
+
+void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
+              int (*compar)(const void *, const void *))
+{
+    if (!compar || size == 0 || nmemb == 0) return NULL;
+
+    const unsigned char *lo = (const unsigned char *)base;
+    const unsigned char *hi = lo + nmemb * size;
+
+    while (lo < hi) {
+        size_t n = (size_t)((hi - lo) / size);
+        const unsigned char *mid = lo + (n / 2) * size;
+        int c = compar(key, mid);
+        if (c == 0) return (void *)mid;
+        if (c < 0) hi = mid;
+        else       lo = mid + size;
+    }
+    return NULL;
 }
 
 void exit(int status) {

@@ -3,17 +3,25 @@
 
 #include <stddef.h>
 
-/* Minimal write-backed stdio skeleton for Phase 11.1.1.
+/* Minimal write-backed stdio for Phase 11.x.
  *
  * Everything goes straight to fd 1 via write(2) -- no buffering, no
  * FILE objects, no stdin.  A real stdio with FILE / buffers / stdin
  * arrives once the VFS and a TTY are ready (Phase 13/15).
  *
  * printf supports:
- *   %s %c %d %i %u %x %X %p %%
- *   %ld %li %lu %lx %lX %lp
- * Width, precision and length modifiers other than 'l' are not
- * implemented yet -- they will land in 11.2. */
+ *   conversions : %d %i %u %o %x %X %c %s %p %%
+ *   flags       : '-' (left), '0' (zero-pad), '+' (sign), ' ' (space),
+ *                 '#' (0x / 0 prefix)
+ *   width       : decimal, or '*' (consumes an int argument)
+ *   precision   : '.' decimal, or '.*' (consumes an int argument)
+ *   length      : hh, h, l, ll, z, t, j
+ *
+ * Not implemented (deliberately, needs more than a write loop):
+ *   - floating point (%f %e %g)
+ *   - positional arguments (%1$d)
+ *   - locale grouping
+ */
 
 #define EOF (-1)
 
