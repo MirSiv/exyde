@@ -24,7 +24,7 @@ static const vfs_ops_t con_ops = {
 
 void condev_init(void) {
     if (console_vnode) return;
-    vnode_t *vn = (vnode_t *)kzalloc(sizeof(vnode_t));
+    vnode_t *vn = (vnode_t *)exy_zalloc(sizeof(vnode_t));
     if (!vn) return;
     vn->ino      = 0;
     vn->type     = VFS_TYPE_CHR;

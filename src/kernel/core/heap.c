@@ -149,7 +149,7 @@ static inline size_t round_up(size_t n) {
     return (n + HEAP_ALIGN - 1) & ~((size_t)HEAP_ALIGN - 1);
 }
 
-void *kmalloc(size_t size) {
+void *exy_malloc(size_t size) {
     if (size == 0) return (void *)0;
 
     size_t need = round_up(size);
@@ -162,43 +162,43 @@ void *kmalloc(size_t size) {
     return alloc_from_list(need);
 }
 
-void *kzalloc(size_t size) {
-    void *p = kmalloc(size);
+void *exy_zalloc(size_t size) {
+    void *p = exy_malloc(size);
     if (!p) return (void *)0;
     u8 *b = (u8 *)p;
     for (size_t i = 0; i < size; ++i) b[i] = 0;
     return p;
 }
 
-void kfree(void *ptr) {
+void exy_free(void *ptr) {
     if (!ptr) return;
 
     vaddr_t a = (vaddr_t)ptr;
     if (a < heap_start || a >= heap_end) {
-        panic("kfree: pointer outside heap");
+        panic("exy_free: pointer outside heap");
     }
 
     heap_block_t *blk = (heap_block_t *)(a - HEAP_HEADER);
     if (block_is_free(blk)) {
-        panic("kfree: double free");
+        panic("exy_free: double free");
     }
 
     heap_live_payload -= blk->size;
     free_list_insert(blk);
 }
 
-void *krealloc(void *ptr, size_t new_size) {
-    if (!ptr) return kmalloc(new_size);
-    if (new_size == 0) { kfree(ptr); return (void *)0; }
+void *exy_realloc(void *ptr, size_t new_size) {
+    if (!ptr) return exy_malloc(new_size);
+    if (new_size == 0) { exy_free(ptr); return (void *)0; }
 
     vaddr_t a = (vaddr_t)ptr;
     if (a < heap_start || a >= heap_end) {
-        panic("krealloc: pointer outside heap");
+        panic("exy_realloc: pointer outside heap");
     }
 
     heap_block_t *blk = (heap_block_t *)(a - HEAP_HEADER);
     if (block_is_free(blk)) {
-        panic("krealloc: pointer already freed");
+        panic("exy_realloc: pointer already freed");
     }
 
     size_t old_size = blk->size;
@@ -208,14 +208,14 @@ void *krealloc(void *ptr, size_t new_size) {
     /* Shrink is a no-op.  Keeping the block avoids needless copying. */
     if (need <= old_size) return ptr;
 
-    void *np = kmalloc(new_size);
+    void *np = exy_malloc(new_size);
     if (!np) return (void *)0;
 
     u8       *dst = (u8 *)np;
     const u8 *src = (const u8 *)ptr;
     for (size_t i = 0; i < old_size; ++i) dst[i] = src[i];
 
-    kfree(ptr);
+    exy_free(ptr);
     return np;
 }
 

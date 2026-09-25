@@ -11,13 +11,13 @@
 
 /* Initialise heap state.  Must be called after vmm is usable
  * (i.e. after vmm_kernel_space() returns non-zero) and before any
- * call to kmalloc. */
+ * call to exy_malloc. */
 void  heap_init(void);
 
-void *kmalloc(size_t size);
-void *kzalloc(size_t size);
-void *krealloc(void *ptr, size_t new_size);
-void  kfree(void *ptr);
+void *exy_malloc(size_t size);
+void *exy_zalloc(size_t size);
+void *exy_realloc(void *ptr, size_t new_size);
+void  exy_free(void *ptr);
 
 /* Introspection (diagnostics and tests). */
 size_t heap_used_bytes(void);   /* payload bytes currently allocated to callers */

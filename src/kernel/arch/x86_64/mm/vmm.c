@@ -77,11 +77,11 @@ vmm_space_t vmm_kernel_space(void) {
 }
 
 vmm_space_t vmm_create(void) {
-    struct vmm_space *s = (struct vmm_space *)kzalloc(sizeof(*s));
+    struct vmm_space *s = (struct vmm_space *)exy_zalloc(sizeof(*s));
     if (!s) return (vmm_space_t)0;
 
     paddr_t np = pmm_alloc_page();
-    if (np == 0) { kfree(s); return (vmm_space_t)0; }
+    if (np == 0) { exy_free(s); return (vmm_space_t)0; }
 
     u64 *new_pml4 = (u64 *)(uintptr_t)np;
     zero_page(new_pml4);
@@ -137,7 +137,7 @@ static void destroy_space(vmm_space_t space) {
         free_pdpt((u64 *)(e & PTE_ADDR_MASK));
     }
     pmm_free_page(space->pml4);
-    kfree(space);
+    exy_free(space);
 }
 
 void vmm_space_ref(vmm_space_t space) {

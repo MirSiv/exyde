@@ -12,21 +12,21 @@ static void copy_bytes(u8 *dst, const u8 *src, size_t n) {
 channel_t *channel_create(size_t capacity, size_t msg_size) {
     if (capacity == 0 || msg_size == 0) return (channel_t *)0;
 
-    channel_t *c = (channel_t *)kzalloc(sizeof(channel_t));
+    channel_t *c = (channel_t *)exy_zalloc(sizeof(channel_t));
     if (!c) return (channel_t *)0;
 
     size_t bytes = capacity * msg_size;
-    c->buffer = (u8 *)kmalloc(bytes);
+    c->buffer = (u8 *)exy_malloc(bytes);
     if (!c->buffer) {
-        kfree(c);
+        exy_free(c);
         return (channel_t *)0;
     }
     for (size_t i = 0; i < bytes; ++i) c->buffer[i] = 0;
 
-    c->caps = (chan_cap_t *)kzalloc(capacity * sizeof(chan_cap_t));
+    c->caps = (chan_cap_t *)exy_zalloc(capacity * sizeof(chan_cap_t));
     if (!c->caps) {
-        kfree(c->buffer);
-        kfree(c);
+        exy_free(c->buffer);
+        exy_free(c);
         return (channel_t *)0;
     }
 
@@ -44,9 +44,9 @@ void channel_destroy(channel_t *c) {
     if (!c) return;
     if (!waitq_empty(&c->senders))   panic("channel: destroy with senders waiting");
     if (!waitq_empty(&c->receivers)) panic("channel: destroy with receivers waiting");
-    kfree(c->caps);
-    kfree(c->buffer);
-    kfree(c);
+    exy_free(c->caps);
+    exy_free(c->buffer);
+    exy_free(c);
 }
 
 size_t channel_count(const channel_t *c)    { return c->count; }

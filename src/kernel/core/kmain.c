@@ -97,13 +97,13 @@ static void vmm_selftest(void) {
 }
 
 static void heap_selftest(void) {
-    u8 *a = (u8 *)kmalloc(16);
-    if (!a) panic("heap test: kmalloc failed");
+    u8 *a = (u8 *)exy_malloc(16);
+    if (!a) panic("heap test: exy_malloc failed");
     if (((u64)a & 15) != 0) panic("heap test: unaligned");
-    u8 *b = (u8 *)kzalloc(64);
-    if (!b) panic("heap test: kzalloc failed");
-    for (int i = 0; i < 64; ++i) if (b[i] != 0) panic("heap test: kzalloc nonzero");
-    kfree(a); kfree(b);
+    u8 *b = (u8 *)exy_zalloc(64);
+    if (!b) panic("heap test: exy_zalloc failed");
+    for (int i = 0; i < 64; ++i) if (b[i] != 0) panic("heap test: exy_zalloc nonzero");
+    exy_free(a); exy_free(b);
     console_ok("heap test: OK\n");
 }
 
@@ -407,9 +407,9 @@ static void user_thread_entry(void *arg) {
 }
 
 static void ring3_syscall_selftest(void) {
-    void *ballast = kmalloc(256 * 1024);
+    void *ballast = exy_malloc(256 * 1024);
     if (!ballast) panic("ring3 test: ballast alloc failed");
-    kfree(ballast);
+    exy_free(ballast);
 
     process_t *p = process_create_from_elf("r3", test_elf_syscall,
                                            sizeof(test_elf_syscall));
@@ -598,13 +598,13 @@ static void userspace_selftest(void) {
                                     argc, argv, envc, envp);
     if (!init) panic("userspace test: spawn init failed");
 
-    kprintf("userspace: spawned init pid=%u, pmm free before=%u\n",
+    exy_printf("userspace: spawned init pid=%u, pmm free before=%u\n",
             (u32)init->pid, (u32)before);
 
     for (int i = 0; i < 1000; ++i) sched_yield();
 
     u64 after = pmm_free_page_count();
-    kprintf("userspace: after reaper, pmm free=%u\n", (u32)after);
+    exy_printf("userspace: after reaper, pmm free=%u\n", (u32)after);
 
     if (after < before)
         panic("userspace test: reaper leaked pages");

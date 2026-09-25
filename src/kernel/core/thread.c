@@ -25,12 +25,12 @@ static u64 next_thread_id = 0;
 thread_t *thread_create(thread_fn_t fn, void *arg, const char *name) {
     if (!fn) return (thread_t *)0;
 
-    thread_t *t = (thread_t *)kzalloc(sizeof(thread_t));
+    thread_t *t = (thread_t *)exy_zalloc(sizeof(thread_t));
     if (!t) return (thread_t *)0;
 
-    u8 *stack = (u8 *)kmalloc(THREAD_STACK_SIZE);
+    u8 *stack = (u8 *)exy_malloc(THREAD_STACK_SIZE);
     if (!stack) {
-        kfree(t);
+        exy_free(t);
         return (thread_t *)0;
     }
 

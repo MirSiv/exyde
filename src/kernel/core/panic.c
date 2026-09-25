@@ -1,7 +1,7 @@
 #include <exyde/panic.h>
 #include <exyde/console.h>
 
-/* ---- kprintf ------------------------------------------------------- */
+/* ---- exy_printf ------------------------------------------------------- */
 
 static void put_u64_dec(u64 v) {
     char buf[21];
@@ -30,7 +30,7 @@ static void put_u64_hex(u64 v) {
     while (n--) console_write_char(buf[n]);
 }
 
-void kprintf(const char *fmt, ...) {
+void exy_printf(const char *fmt, ...) {
     __builtin_va_list ap;
     __builtin_va_start(ap, fmt);
     for (const char *p = fmt; *p; ++p) {
@@ -88,8 +88,8 @@ void panicf(const char *fmt, ...) {
     __builtin_va_list ap;
     __builtin_va_start(ap, fmt);
 
-    /* kprintf already does the formatting; re-implement the small
-     * subset inline so we don't need a v-kprintf variant yet. */
+    /* exy_printf already does the formatting; re-implement the small
+     * subset inline so we don't need a v-exy_printf variant yet. */
     for (const char *p = fmt; *p; ++p) {
         if (*p != '%') { console_write_char(*p); continue; }
         ++p;

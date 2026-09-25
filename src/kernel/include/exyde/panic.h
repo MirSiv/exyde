@@ -13,7 +13,7 @@
  *   %%  literal '%'
  * Any other conversion is printed verbatim (% + char).
  * No width/precision/flags.  Safe to call from any CPL0 context. */
-void kprintf(const char *fmt, ...);
+void exy_printf(const char *fmt, ...);
 
 /* Fatal kernel failure.  Prints the message on the early console and
  * halts the CPU forever.  Does not return. */
@@ -30,7 +30,7 @@ void panicf(const char *fmt, ...) __attribute__((noreturn));
 /* Same, but non-fatal: warn once on the console and continue. */
 #define WARN_ON(cond) \
     do { \
-        if (cond) kprintf("WARN: %s:%d: %s\n", __FILE__, __LINE__, #cond); \
+        if (cond) exy_printf("WARN: %s:%d: %s\n", __FILE__, __LINE__, #cond); \
     } while (0)
 
 #endif /* EXYDE_PANIC_H */

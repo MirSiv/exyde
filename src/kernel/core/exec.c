@@ -118,7 +118,7 @@ static bool process_open_console_fds(process_t *p) {
 
     for (int i = 0; i < 3; ++i) {
         if (i > 0) vnode_ref(cons);   /* fd 0 already holds the first ref */
-        file_t *f = (file_t *)kzalloc(sizeof(file_t));
+        file_t *f = (file_t *)exy_zalloc(sizeof(file_t));
         if (!f) { vnode_unref(cons); return false; }
         f->vn       = cons;
         f->offset   = 0;

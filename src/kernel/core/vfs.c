@@ -165,7 +165,7 @@ int vfs_open(const char *path, u32 flags, u32 mode, file_t **out) {
         if (r < 0) { vnode_unref(vn); return r; }
     }
 
-    file_t *f = (file_t *)kzalloc(sizeof(file_t));
+    file_t *f = (file_t *)exy_zalloc(sizeof(file_t));
     if (!f) { vnode_unref(vn); return -ENOMEM; }
     f->vn       = vn;   /* takes the reference from vfs_resolve/create */
     f->offset   = 0;
@@ -182,7 +182,7 @@ int vfs_close(file_t *f) {
         return 0;
     }
     vnode_unref(f->vn);
-    kfree(f);
+    exy_free(f);
     return 0;
 }
 

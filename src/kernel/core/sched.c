@@ -19,7 +19,7 @@ static size_t         ready_count;
 static volatile int   need_resched;
 
 /* Zombie list: threads that called thread_exit.  They are not freed
- * until another thread is running on the CPU, so we never kfree the
+ * until another thread is running on the CPU, so we never exy_free the
  * stack we are currently executing on. */
 static thread_t      *zombie_head;
 static thread_t      *zombie_tail;
@@ -109,8 +109,8 @@ static void free_thread(thread_t *t) {
     /* Drop the thread's own reference to the address space.  For
      * kernel-space threads this is a no-op. */
     if (t->space) vmm_space_unref(t->space);
-    if (t->stack_base) kfree((void *)(uintptr_t)t->stack_base);
-    kfree(t);
+    if (t->stack_base) exy_free((void *)(uintptr_t)t->stack_base);
+    exy_free(t);
 }
 
 /* Runs on the newly-current thread's stack.  Any zombie is guaranteed

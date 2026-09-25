@@ -38,7 +38,7 @@ process_t *process_create_from_elf(const char *name,
         return (process_t *)0;
     }
 
-    process_t *p = (process_t *)kzalloc(sizeof(process_t));
+    process_t *p = (process_t *)exy_zalloc(sizeof(process_t));
     if (!p) {
         vmm_space_unref(space);
         return (process_t *)0;
@@ -51,10 +51,10 @@ process_t *process_create_from_elf(const char *name,
     size_t name_len = 0;
     while (name && name[name_len]) ++name_len;
     name_len += 1;
-    char *name_copy = (char *)kmalloc(name_len);
+    char *name_copy = (char *)exy_malloc(name_len);
     if (!name_copy) {
         vmm_space_unref(space);
-        kfree(p);
+        exy_free(p);
         return (process_t *)0;
     }
     for (size_t i = 0; i < name_len; ++i) name_copy[i] = name[i];
@@ -113,6 +113,6 @@ void process_destroy(process_t *p) {
     handle_table_destroy(&p->handles);
     fd_table_destroy(&p->fds);
     vmm_space_unref(p->space);
-    if (p->name) kfree((void *)p->name);
-    kfree(p);
+    if (p->name) exy_free((void *)p->name);
+    exy_free(p);
 }

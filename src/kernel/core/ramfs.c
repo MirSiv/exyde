@@ -67,7 +67,7 @@ static const vfs_ops_t ramfs_ops = {
 /* ---- node construction ---------------------------------------------- */
 
 static vnode_t *ramfs_new_node(u32 type, u32 mode) {
-    ramfs_node_t *n = (ramfs_node_t *)kzalloc(sizeof(ramfs_node_t));
+    ramfs_node_t *n = (ramfs_node_t *)exy_zalloc(sizeof(ramfs_node_t));
     if (!n) return (vnode_t *)0;
     n->vn.ino      = ramfs_next_ino++;
     n->vn.type     = type;
@@ -215,11 +215,11 @@ static i64 ramfs_write(vnode_t *vn, const void *buf, size_t n, u64 off) {
             if (newcap > (1ULL << 62)) return -ENOMEM;
             newcap *= 2;
         }
-        u8 *nd = (u8 *)kmalloc((size_t)newcap);
+        u8 *nd = (u8 *)exy_malloc((size_t)newcap);
         if (!nd) return -ENOMEM;
         for (u64 i = 0; i < vn->size; ++i) nd[i] = node->data[i];
         for (u64 i = vn->size; i < off && i < newcap; ++i) nd[i] = 0;
-        if (node->data) kfree(node->data);
+        if (node->data) exy_free(node->data);
         node->data = nd;
         node->capacity = newcap;
     }
@@ -244,11 +244,11 @@ static int ramfs_truncate(vnode_t *vn, u64 size) {
         return 0;
     }
 
-    u8 *nd = (u8 *)kzalloc((size_t)size);
+    u8 *nd = (u8 *)exy_zalloc((size_t)size);
     if (!nd) return -ENOMEM;
     if (node->data) {
         for (u64 i = 0; i < vn->size && i < size; ++i) nd[i] = node->data[i];
-        kfree(node->data);
+        exy_free(node->data);
     }
     node->data     = nd;
     node->capacity = size;
@@ -267,6 +267,6 @@ static void ramfs_destroy(vnode_t *vn) {
         vnode_unref(&c->vn);
         c = nxt;
     }
-    if (node->data) kfree(node->data);
-    kfree(node);
+    if (node->data) exy_free(node->data);
+    exy_free(node);
 }
