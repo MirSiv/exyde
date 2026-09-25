@@ -1,649 +1,116 @@
+/* init.elf -- service manager.
+ *
+ * Phase 11.5.2.  Runs as the first user process (spawned by the
+ * kernel bootstrap path in kmain.c::userspace_selftest).  Its job:
+ *
+ *   1. Spawn "test" -- the Phase 11 regression suite -- with a
+ *      bootstrap channel, wait for it, and abort with a non-zero
+ *      exit code if it failed.
+ *   2. Spawn "echo" -- the first real service -- with another
+ *      bootstrap channel, exercise an IPC round-trip, ask it to
+ *      quit, and wait for it.
+ *   3. Exit 0.
+ *
+ * This is deliberately thin.  Everything that was init's test suite
+ * moved to test.elf. */
+
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <stddef.h>
 #include <errno.h>
-#include "../libc/internal/syscall.h"
 #include <exyde/micro.h>
 
-/* init for Phase 11.3.1 (environment). */
+static int run_regression_suite(void) {
+    exyde_handle_t ch = exyde_ipc_create(16, 2);
+    if (ch == EXYDE_HANDLE_INVALID) {
+        printf("init: FAIL cannot create bootstrap channel\n");
+        return 1;
+    }
 
-static int cmp_int(const void *a, const void *b) {
-    int x = *(const int *)a;
-    int y = *(const int *)b;
-    return (x > y) - (x < y);
+    exyde_handle_t child = exyde_spawn("test", ch);
+    if (child == EXYDE_HANDLE_INVALID) {
+        printf("init: FAIL spawn test errno=%d\n", errno);
+        exyde_handle_close(ch);
+        return 1;
+    }
+
+    int code = exyde_wait(child);
+    exyde_handle_close(ch);
+    exyde_handle_close(child);
+
+    if (code != 0) {
+        printf("init: FAIL test.elf exit code %d\n", code);
+        return 1;
+    }
+    printf("init: test suite OK\n");
+    return 0;
 }
 
-static int cmp_str(const void *a, const void *b) {
-    const char *x = *(const char *const *)a;
-    const char *y = *(const char *const *)b;
-    return strcmp(x, y);
+static int run_echo_service(void) {
+    exyde_handle_t ch = exyde_ipc_create(16, 2);
+    if (ch == EXYDE_HANDLE_INVALID) {
+        printf("init: FAIL cannot create echo channel\n");
+        return 1;
+    }
+
+    exyde_handle_t child = exyde_spawn("echo", ch);
+    if (child == EXYDE_HANDLE_INVALID) {
+        printf("init: FAIL spawn echo errno=%d\n", errno);
+        exyde_handle_close(ch);
+        return 1;
+    }
+
+    /* Round-trip: send "ping", expect "ping" back.  The channel is a
+     * single FIFO queue, so at most one message is in flight at a
+     * time and capacity 2 is more than enough. */
+    char tx[16] = "ping";
+    char rx[16];
+    if (exyde_ipc_send(ch, tx, 16) != 0) {
+        printf("init: FAIL echo send errno=%d\n", errno);
+        goto fail;
+    }
+    if (exyde_ipc_recv(ch, rx, 16) != 16) {
+        printf("init: FAIL echo recv errno=%d\n", errno);
+        goto fail;
+    }
+    if (strcmp(rx, "ping") != 0) {
+        printf("init: FAIL echo mismatch [%s]\n", rx);
+        goto fail;
+    }
+
+    /* Ask echo to quit. */
+    char q[16] = "quit";
+    if (exyde_ipc_send(ch, q, 16) != 0) {
+        printf("init: FAIL echo quit send errno=%d\n", errno);
+        goto fail;
+    }
+
+    int code = exyde_wait(child);
+    exyde_handle_close(ch);
+    exyde_handle_close(child);
+
+    if (code != 0) {
+        printf("init: FAIL echo.elf exit code %d\n", code);
+        return 1;
+    }
+    printf("init: echo service OK\n");
+    return 0;
+
+fail:
+    exyde_handle_close(ch);
+    exyde_handle_close(child);
+    return 1;
 }
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv;
+    (void)argc; (void)argv; (void)envp;
 
-    printf("init: hello from userspace (C)\n");
+    printf("init: service manager starting\n");
 
-    /* --- abs / labs --- */
-    printf("init: abs    [%d] [%d] [%ld] [%ld]\n",
-           abs(5), abs(-5), labs(1234567890L), labs(-1234567890L));
+    if (run_regression_suite() != 0) return 1;
+    if (run_echo_service()     != 0) return 1;
 
-    /* --- qsort on ints --- */
-    {
-        int v[] = { 5, 1, 4, 2, 8, 0, 9, 3, 7, 6, 5, 2 };
-        size_t n = sizeof(v) / sizeof(v[0]);
-        qsort(v, n, sizeof(v[0]), cmp_int);
-        printf("init: qsort int ");
-        for (size_t i = 0; i < n; ++i) printf(" %d", v[i]);
-        printf("\n");
-    }
-
-    /* --- qsort on strings --- */
-    {
-        const char *s[] = { "banana", "apple", "cherry", "date", "elderberry" };
-        size_t n = sizeof(s) / sizeof(s[0]);
-        qsort(s, n, sizeof(s[0]), cmp_str);
-        printf("init: qsort str");
-        for (size_t i = 0; i < n; ++i) printf(" %s", s[i]);
-        printf("\n");
-    }
-
-    /* --- bsearch on the sorted ints --- */
-    {
-        int v[] = { 1, 3, 5, 7, 9, 11, 13 };
-        size_t n = sizeof(v) / sizeof(v[0]);
-        int key = 7;
-        int *hit = (int *)bsearch(&key, v, n, sizeof(v[0]), cmp_int);
-        int miss_key = 4;
-        int *miss = (int *)bsearch(&miss_key, v, n, sizeof(v[0]), cmp_int);
-        printf("init: bsearch [%d] [%s]\n",
-               hit ? *hit : -1,
-               miss ? "found" : "missing");
-    }
-
-    /* --- string.h regression --- */
-    char buf[64];
-    strcpy(buf, "hello, ");
-    strcat(buf, "world");
-    printf("init: cat    [%s]\n", buf);
-
-    {
-        char tokbuf[] = "a,b,,c,";
-        char *t;
-        printf("init: tok   ");
-        for (t = strtok(tokbuf, ","); t; t = strtok(NULL, ",")) {
-            printf(" [%s]", t);
-        }
-        printf(" [end]\n");
-    }
-
-    /* --- string.h tail regression (Phase 11.3.2) --- */
-    {
-        /* strpbrk: first char of s that is in accept. */
-        const char *p1 = strpbrk("hello, world", " ,");
-        const char *p2 = strpbrk("hello", "xyz");
-        const char *p3 = strpbrk("hello", "");
-        printf("init: strpbrk [%s] [%s] [%s]\n",
-               p1 ? p1 : "(null)",
-               p2 ? p2 : "(null)",
-               p3 ? p3 : "(null)");
-        if (!p1 || strcmp(p1, ", world") != 0) return 30;
-        if (p2) return 31;
-        if (p3) return 32;
-
-        /* memchr: bounded search, must not read past n bytes. */
-        const char h[] = "hello";
-        const char *m1 = (const char *)memchr(h, 'l', 5);    /* -> h+2 */
-        const char *m2 = (const char *)memchr(h, 'l', 2);    /* miss  */
-        const char *m3 = (const char *)memchr(h, '\0', 5);  /* miss  */
-        const char *m4 = (const char *)memchr(h, '\0', 6);  /* -> h+5 */
-        const char *m5 = (const char *)memchr(h, 'h', 0);    /* n=0 miss */
-        printf("init: memchr [%d] [%s] [%s] [%d] [%s]\n",
-               m1 ? (int)(m1 - h) : -1,
-               m2 ? "hit" : "miss",
-               m3 ? "hit" : "miss",
-               m4 ? (int)(m4 - h) : -1,
-               m5 ? "hit" : "miss");
-        if (!m1 || (m1 - h) != 2) return 33;
-        if (m2) return 34;
-        if (m3) return 35;
-        if (!m4 || (m4 - h) != 5) return 36;
-        if (m5) return 37;
-
-        /* strspn / strcspn edge cases. */
-        size_t s1 = strspn("aaabbb", "a");    /* 3 */
-        size_t s2 = strspn("abc", "");        /* 0 */
-        size_t s3 = strcspn("abcdef", "cd");  /* 2 */
-        size_t s4 = strcspn("abcdef", "");    /* 6 */
-        printf("init: strspn/cspn [%zu] [%zu] [%zu] [%zu]\n",
-               s1, s2, s3, s4);
-        if (s1 != 3 || s2 != 0 || s3 != 2 || s4 != 6) return 38;
-
-        /* strncpy: NUL-pad, n=0 writes nothing, boundary at n. */
-        char nc1[8];
-        memset(nc1, 'X', sizeof nc1);
-        strncpy(nc1, "abc", 5);
-        if (nc1[0] != 'a' || nc1[1] != 'b' || nc1[2] != 'c' ||
-            nc1[3] != 0   || nc1[4] != 0   || nc1[5] != 'X') return 39;
-
-        char nc2[4] = "abc";
-        strncpy(nc2, "xyz", 0);
-        if (strcmp(nc2, "abc") != 0) return 40;
-
-        /* strncat: bounded append, always NUL-terminated, n=0 no-op. */
-        char na1[16] = "foo";
-        strncat(na1, "barbaz", 3);
-        if (strcmp(na1, "foobar") != 0) return 41;
-
-        char na2[16] = "foo";
-        strncat(na2, "bar", 0);
-        if (strcmp(na2, "foo") != 0) return 42;
-
-        printf("init: strncpy/strncat ok\n");
-    }
-
-    /* --- numeric conversion regression --- */
-    printf("init: strtol [%ld] [%ld] [%ld]\n",
-           strtol("-17", NULL, 0),
-           strtol("0xff", NULL, 0),
-           strtol("101010", NULL, 2));
-
-    /* --- strerror / perror --- */
-    printf("init: strerror [%s] [%s] [%s] [%s]\n",
-           strerror(ENOENT),
-           strerror(EINVAL),
-           strerror(ERANGE),
-           strerror(ENOSYS));
-    {
-        char s1[64], s2[64];
-        strcpy(s1, strerror(999));
-        strcpy(s2, strerror(-1));
-        printf("init: strerror unknown [%s] [%s]\n", s1, s2);
-    }
-
-    errno = ENOENT;
-    perror("init: perror-test");
-    errno = 0;
-    perror("init: perror-empty");
-
-    /* --- snprintf / sprintf regression --- */
-    {
-        char sb[64];
-        int n = snprintf(sb, sizeof(sb), "%d/%s/%04x", 42, "abc", 0xbeef);
-        printf("init: snprintf [%s] [%d]\n", sb, n);
-    }
-    {
-        char tb[8];
-        int tn = snprintf(tb, sizeof(tb), "abcdefghijklmn");
-        printf("init: snprintf trunc [%s] [%d]\n", tb, tn);
-    }
-    {
-        char ob[1];
-        int on = snprintf(ob, sizeof(ob), "xyz");
-        printf("init: snprintf n=1 [%d] [%d]\n",
-               (int)(unsigned char)ob[0], on);
-    }
-    {
-        int zn = snprintf(NULL, 0, "%d-%d-%d", 1, 22, 333);
-        printf("init: snprintf n=0 [%d]\n", zn);
-    }
-    {
-        char sp[64];
-        int sn = sprintf(sp, "x=%d y=%s", -7, "ok");
-        printf("init: sprintf [%s] [%d]\n", sp, sn);
-    }
-
-    /* --- allocator regression --- */
-    char *a = (char *)malloc(64);
-    char *b = (char *)malloc(64);
-    char *c = (char *)malloc(64);
-    if (!a || !b || !c) { printf("init: malloc failed\n"); return 1; }
-    strcpy(a, "hello, malloc!");
-    strcpy(b, "block-b");
-    strcpy(c, "block-c");
-    printf("init: a=%s b=%s c=%s\n", a, b, c);
-
-    free(b);
-    free(a);
-
-    char *d = (char *)malloc(96);
-    if (!d) { printf("init: re-malloc failed\n"); return 2; }
-    strcpy(d, "reused");
-    printf("init: d=%s c=%s\n", d, c);
-    if (strcmp(c, "block-c") != 0) {
-        printf("init: coalesce test failed, c=%s\n", c);
-        return 3;
-    }
-
-    unsigned char *z = (unsigned char *)calloc(32, 1);
-    if (!z) { printf("init: calloc failed\n"); return 4; }
-    for (int i = 0; i < 32; ++i) {
-        if (z[i] != 0) {
-            printf("init: calloc not zero at index %d\n", i);
-            return 5;
-        }
-    }
-    free(z);
-
-    char *r = (char *)malloc(32);
-    if (!r) { printf("init: realloc setup failed\n"); return 6; }
-    strcpy(r, "small");
-    r = (char *)realloc(r, 128);
-    if (!r || strcmp(r, "small") != 0) {
-        printf("init: realloc grow failed\n");
-        return 7;
-    }
-    free(r);
-    free(c);
-    free(d);
-
-    printf("init: heap ok\n");
-
-    /* --- environment regression (Phase 11.3.1) ---
-     *
-     * Deliberately the LAST block in main(): the ENOMEM case below
-     * exhausts the arena on purpose and never frees the exhaust
-     * allocations.  That is fine because the process exits right
-     * after, and the heap is torn down with it.  Nothing else in
-     * init runs once the arena is exhausted, so printf (which does
-     * not allocate) still works.
-     */
-    {
-        /* (8) crt0 must have installed environ == envp before main. */
-        if (environ != envp) {
-            printf("init: env FAIL environ != envp\n");
-            return 10;
-        }
-
-        /* (1) getenv of an existing initial-env variable. */
-        const char *path0 = getenv("PATH");
-        printf("init: env get initial [%s]\n", path0 ? path0 : "(null)");
-        if (!path0 || strcmp(path0, "/") != 0) return 11;
-
-        /* (2) getenv of a missing variable. */
-        char *miss = getenv("EXYDE_NO_SUCH_VAR");
-        printf("init: env get missing [%s]\n", miss ? miss : "(null)");
-        if (miss) return 12;
-
-        /* (3) setenv overwrite=0 must not clobber an existing value. */
-        int r3 = setenv("PATH", "/overwritten", 0);
-        const char *path1 = getenv("PATH");
-        printf("init: env setenv nooverwrite [%d] [%s]\n",
-               r3, path1 ? path1 : "(null)");
-        if (r3 != 0 || !path1 || strcmp(path1, "/") != 0) return 13;
-
-        /* (4) setenv overwrite=1 must replace it.  The original "/"
-         * lives on the initial envp stack, so no free() must occur;
-         * the new value is heap-owned. */
-        int r4 = setenv("PATH", "/new", 1);
-        const char *path2 = getenv("PATH");
-        printf("init: env setenv overwrite [%d] [%s]\n",
-               r4, path2 ? path2 : "(null)");
-        if (r4 != 0 || !path2 || strcmp(path2, "/new") != 0) return 14;
-
-        /* (5) setenv of a brand-new variable. */
-        int r5 = setenv("EXYDE", "1", 0);
-        const char *e1 = getenv("EXYDE");
-        printf("init: env setenv new [%d] [%s]\n",
-               r5, e1 ? e1 : "(null)");
-        if (r5 != 0 || !e1 || strcmp(e1, "1") != 0) return 15;
-
-        /* (6) unsetenv of an existing variable. */
-        int r6 = unsetenv("EXYDE");
-        const char *e2 = getenv("EXYDE");
-        printf("init: env unset existing [%d] [%s]\n",
-               r6, e2 ? e2 : "(null)");
-        if (r6 != 0 || e2) return 16;
-
-        /* (7) unsetenv of a missing variable is a no-op success. */
-        int r7 = unsetenv("EXYDE_NO_SUCH_VAR");
-        printf("init: env unset missing [%d]\n", r7);
-        if (r7 != 0) return 17;
-
-        /* (8) EINVAL on empty name. */
-        errno = 0;
-        int r8 = setenv("", "x", 0);
-        printf("init: env einval empty [%d] [%d]\n", r8, errno);
-        if (r8 != -1 || errno != EINVAL) return 18;
-
-        /* (9) EINVAL on name containing '='. */
-        errno = 0;
-        int r9 = setenv("A=B", "x", 0);
-        printf("init: env einval eq [%d] [%d]\n", r9, errno);
-        if (r9 != -1 || errno != EINVAL) return 19;
-
-        /* (10) growth path: many setenv, verify, many unsetenv, then
-         * check that environ survived realloc and older entries stay. */
-        for (int i = 0; i < 20; ++i) {
-            char nm[32], vl[32];
-            snprintf(nm, sizeof nm, "EXYDE_TEST_%d", i);
-            snprintf(vl, sizeof vl, "v%d", i);
-            if (setenv(nm, vl, 1) != 0) {
-                printf("init: env growth setenv failed at %d\n", i);
-                return 20;
-            }
-        }
-        for (int i = 0; i < 20; ++i) {
-            char nm[32], want[32];
-            snprintf(nm,   sizeof nm,   "EXYDE_TEST_%d", i);
-            snprintf(want, sizeof want, "v%d", i);
-            char *got = getenv(nm);
-            if (!got || strcmp(got, want) != 0) {
-                printf("init: env growth verify failed at %d\n", i);
-                return 21;
-            }
-        }
-        const char *path3 = getenv("PATH");
-        if (!path3 || strcmp(path3, "/new") != 0) {
-            printf("init: env PATH lost after growth\n");
-            return 22;
-        }
-        printf("init: env growth ok (20 vars, PATH preserved)\n");
-
-        for (int i = 0; i < 20; ++i) {
-            char nm[32];
-            snprintf(nm, sizeof nm, "EXYDE_TEST_%d", i);
-            if (unsetenv(nm) != 0) {
-                printf("init: env shrink unsetenv failed at %d\n", i);
-                return 23;
-            }
-        }
-
-        /* (11) ENOMEM.
-         *
-         * The boundary-tag allocator grows the arena by sbrk() in
-         * 64 KiB chunks, so a single exhausted malloc(64 KiB) can
-         * leave large free fragments behind.  Walk the request size
-         * down from 64 KiB to 16 so those fragments get consumed
-         * too, then setenv's own allocation must fail.
-         *
-         * The exhaust allocations are intentionally never freed --
-         * see the block comment above. */
-        size_t sz = 64 * 1024;
-        int n_holes = 0;
-        while (sz >= 16) {
-            void *p = malloc(sz);
-            if (p) { ++n_holes; continue; }
-            sz /= 2;
-        }
-
-        errno = 0;
-        int r11 = setenv("EXYDE_ENOMEM", "x", 0);
-        int e11 = errno;
-        if (r11 != -1 || e11 != ENOMEM) {
-            printf("init: env enomem unexpected [%d] [%d] holes=%d\n",
-                   r11, e11, n_holes);
-            return 24;
-        }
-        if (getenv("EXYDE_ENOMEM")) {
-            printf("init: env enomem left a stale entry\n");
-            return 25;
-        }
-        printf("init: env enomem ok (holes=%d)\n", n_holes);
-
-        /* (12) getenv still works after everything. */
-        const char *path4 = getenv("PATH");
-        printf("init: env final PATH [%s]\n", path4 ? path4 : "(null)");
-        if (!path4 || strcmp(path4, "/new") != 0) return 26;
-    }
-
-    /* --- microkernel ABI regression (Phase 11.5.0) --- */
-    {
-        /* IPC: create + try_send + try_recv + EAGAIN + close. */
-        exyde_handle_t ch = exyde_ipc_create(16, 2);
-        if (ch == EXYDE_HANDLE_INVALID) {
-            printf("init: micro FAIL ipc_create errno=%d\n", errno);
-            return 30;
-        }
-
-        char msg1[16] = "msg-1";
-        char msg2[16] = "msg-2";
-        char msg3[16] = "msg-3";
-        if (exyde_ipc_try_send(ch, msg1, 16) != 0) return 31;
-        if (exyde_ipc_try_send(ch, msg2, 16) != 0) return 32;
-
-        errno = 0;
-        if (exyde_ipc_try_send(ch, msg3, 16) != -1 || errno != EAGAIN)
-            return 33;
-
-        char out[16];
-        if (exyde_ipc_recv(ch, out, 16) != 16) return 34;
-        if (strcmp(out, "msg-1") != 0) return 35;
-        if (exyde_ipc_recv(ch, out, 16) != 16) return 36;
-        if (strcmp(out, "msg-2") != 0) return 37;
-
-        errno = 0;
-        if (exyde_ipc_try_recv(ch, out, 16) != -1 || errno != EAGAIN)
-            return 38;
-
-        if (exyde_handle_close(ch) != 0) return 39;
-
-        printf("init: micro ipc ok\n");
-
-        /* IPC: EINVAL on bad create args. */
-        errno = 0;
-        if (exyde_ipc_create(0, 2) != EXYDE_HANDLE_INVALID || errno != EINVAL)
-            return 40;
-        errno = 0;
-        if (exyde_ipc_create(16, 0) != EXYDE_HANDLE_INVALID || errno != EINVAL)
-            return 41;
-        errno = 0;
-        if (exyde_ipc_create(9999, 2) != EXYDE_HANDLE_INVALID || errno != EINVAL)
-            return 42;
-
-        /* MAP / UNMAP. */
-        unsigned char *p = (unsigned char *)exyde_map(NULL, 1, EXYDE_MAP_WRITE);
-        if (!p) {
-            printf("init: micro FAIL map errno=%d\n", errno);
-            return 43;
-        }
-        p[0] = 0xAB;
-        p[EXYDE_PAGE_SIZE - 1] = 0xCD;
-        if (p[0] != 0xAB || p[EXYDE_PAGE_SIZE - 1] != 0xCD) return 44;
-        if (exyde_unmap(p, 1) != 0) return 45;
-
-        /* MAP: read-only (flags = 0) is accepted; write-only is the
-         * common case.  Just check it does not fail. */
-        void *ro = exyde_map(NULL, 1, 0);
-        if (!ro) return 46;
-        if (exyde_unmap(ro, 1) != 0) return 47;
-
-        /* MAP: npages = 0 -> EINVAL. */
-        errno = 0;
-        if (exyde_map(NULL, 0, EXYDE_MAP_WRITE) != NULL || errno != EINVAL)
-            return 48;
-
-        /* MAP: unknown flag -> EINVAL (kernel only accepts VM_WRITE). */
-        errno = 0;
-        if (exyde_map(NULL, 1, 0x8000u) != NULL || errno != EINVAL)
-            return 49;
-
-        /* UNMAP: unaligned address -> EINVAL. */
-        errno = 0;
-        if (exyde_unmap((void *)(uintptr_t)1, 1) != -1 || errno != EINVAL)
-            return 50;
-
-        /* YIELD always succeeds. */
-        if (exyde_yield() != 0) return 51;
-
-        printf("init: micro map/yield ok\n");
-
-        /* ---- IPC capability transfer (Phase 11.5.1) --------------- */
-
-        /* Build two channels: `xch` is the transport, `data_ch` is
-         * the capability we will send through it. */
-        exyde_handle_t xch      = exyde_ipc_create(16, 2);
-        exyde_handle_t data_ch = exyde_ipc_create(16, 1);
-        if (xch == EXYDE_HANDLE_INVALID || data_ch == EXYDE_HANDLE_INVALID)
-            { printf("init: micro cap FAIL code=60\n"); return 60; }
-
-        /* --- TRANSFER --- */
-        {
-            char msg[16] = "xfer";
-            if (exyde_ipc_send_cap(xch, msg, 16, data_ch,
-                                   EXYDE_IPC_CAP_TRANSFER) != 0)
-                { printf("init: micro cap FAIL code=61\n"); return 61; }
-
-            /* Sender's old handle must now be dead. */
-            char dummy[16] = "z";
-            errno = 0;
-            if (exyde_ipc_try_send(data_ch, dummy, 16) != -1 || errno != EBADF)
-                { printf("init: micro cap FAIL code=62\n"); return 62; }
-
-            /* Receiver picks up the capability. */
-            char rx[16];
-            exyde_handle_t got = EXYDE_HANDLE_INVALID;
-            if (exyde_ipc_recv_cap(xch, rx, 16, &got) != 16) { printf("init: micro cap FAIL code=63\n"); return 63; }
-            if (strcmp(rx, "xfer") != 0) { printf("init: micro cap FAIL code=64\n"); return 64; }
-            if (got == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=65\n"); return 65; }
-
-            /* New handle works: send + recv on it. */
-            char p1[16] = "hi";
-            if (exyde_ipc_try_send(got, p1, 16) != 0) { printf("init: micro cap FAIL code=66\n"); return 66; }
-            char p2[16];
-            if (exyde_ipc_recv(got, p2, 16) != 16) { printf("init: micro cap FAIL code=67\n"); return 67; }
-            if (strcmp(p2, "hi") != 0) { printf("init: micro cap FAIL code=68\n"); return 68; }
-
-            if (exyde_handle_close(got) != 0) { printf("init: micro cap FAIL code=69\n"); return 69; }
-        }
-
-        /* --- DUPLICATE --- */
-        {
-            exyde_handle_t dup_src = exyde_ipc_create(16, 1);
-            if (dup_src == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=70\n"); return 70; }
-
-            char msg[16] = "dup";
-            if (exyde_ipc_send_cap(xch, msg, 16, dup_src,
-                                   EXYDE_IPC_CAP_DUPLICATE) != 0)
-                { printf("init: micro cap FAIL code=71\n"); return 71; }
-
-            /* Sender's original handle must still work. */
-            char p1[16] = "keep";
-            if (exyde_ipc_try_send(dup_src, p1, 16) != 0) { printf("init: micro cap FAIL code=72\n"); return 72; }
-
-            /* Drain that to keep the channel clean. */
-            char p2[16];
-            if (exyde_ipc_recv(dup_src, p2, 16) != 16) { printf("init: micro cap FAIL code=73\n"); return 73; }
-            if (strcmp(p2, "keep") != 0) { printf("init: micro cap FAIL code=74\n"); return 74; }
-
-            /* Receiver gets a copy. */
-            char rx[16];
-            exyde_handle_t got = EXYDE_HANDLE_INVALID;
-            if (exyde_ipc_recv_cap(xch, rx, 16, &got) != 16) { printf("init: micro cap FAIL code=75\n"); return 75; }
-            if (strcmp(rx, "dup") != 0) { printf("init: micro cap FAIL code=76\n"); return 76; }
-            if (got == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=77\n"); return 77; }
-
-            /* Both handles now usable independently. */
-            if (exyde_ipc_try_send(got, p1, 16) != 0) { printf("init: micro cap FAIL code=78\n"); return 78; }
-            /* got and dup_src refer to the SAME channel (DUPLICATE);
-             * it now holds one message, so a second try_send must
-             * fail with EAGAIN. */
-            errno = 0;
-            if (exyde_ipc_try_send(dup_src, p1, 16) != -1 || errno != EAGAIN) { printf("init: micro cap FAIL code=79\n"); return 79; }
-            char p3[16];
-            if (exyde_ipc_recv(dup_src, p3, 16) != 16) { printf("init: micro cap FAIL code=79b\n"); return 79; }
-            if (strcmp(p3, "keep") != 0) { printf("init: micro cap FAIL code=79c\n"); return 79; }
-
-            if (exyde_handle_close(got) != 0) { printf("init: micro cap FAIL code=80\n"); return 80; }
-            if (exyde_handle_close(dup_src) != 0) { printf("init: micro cap FAIL code=81\n"); return 81; }
-        }
-
-        /* --- plain recv on a cap-carrying message refuses (EINVAL) --- */
-        {
-            exyde_handle_t tag = exyde_ipc_create(16, 1);
-            if (tag == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=82\n"); return 82; }
-
-            char msg[16] = "z";
-            if (exyde_ipc_send_cap(xch, msg, 16, tag,
-                                   EXYDE_IPC_CAP_DUPLICATE) != 0)
-                { printf("init: micro cap FAIL code=83\n"); return 83; }
-
-            char rx[16];
-            errno = 0;
-            if (exyde_ipc_try_recv(xch, rx, 16) != -1 || errno != EINVAL)
-                { printf("init: micro cap FAIL code=84\n"); return 84; }
-
-            /* The message must still be in the channel; consume it
-             * properly this time. */
-            exyde_handle_t got = EXYDE_HANDLE_INVALID;
-            if (exyde_ipc_recv_cap(xch, rx, 16, &got) != 16) { printf("init: micro cap FAIL code=85\n"); return 85; }
-            if (got == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=86\n"); return 86; }
-
-            if (exyde_handle_close(got) != 0) { printf("init: micro cap FAIL code=87\n"); return 87; }
-            if (exyde_handle_close(tag) != 0) { printf("init: micro cap FAIL code=88\n"); return 88; }
-        }
-
-        /* --- send without TRANSFER right -> EPERM --- */
-        {
-            /* Plain test handle: created with HANDLE_CREATE via the
-             * kernel, no TRANSFER bit.  We use the raw syscall since
-             * there is no libc wrapper for it. */
-            /* HANDLE_KIND_TEST = 1, HANDLE_RIGHT_READ = 1. */
-            long th = __exyde_syscall(SYS_HANDLE_CREATE, 1, 1, 0, 0, 0);
-            if (th < 0) { printf("init: micro cap FAIL code=89\n"); return 89; }
-
-            char msg[16] = "no";
-            errno = 0;
-            if (exyde_ipc_send_cap(xch, msg, 16, (exyde_handle_t)th,
-                                   EXYDE_IPC_CAP_TRANSFER) != -1 || errno != EPERM)
-                { printf("init: micro cap FAIL code=90\n"); return 90; }
-
-            if (exyde_handle_close((exyde_handle_t)th) != 0) { printf("init: micro cap FAIL code=91\n"); return 91; }
-        }
-
-        /* --- bad action -> EINVAL --- */
-        {
-            exyde_handle_t tmp = exyde_ipc_create(16, 1);
-            if (tmp == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=92\n"); return 92; }
-
-            char msg[16] = "a";
-            errno = 0;
-            if (exyde_ipc_send_cap(xch, msg, 16, tmp, 99) != -1 || errno != EINVAL)
-                { printf("init: micro cap FAIL code=93\n"); return 93; }
-
-            if (exyde_handle_close(tmp) != 0) { printf("init: micro cap FAIL code=94\n"); return 94; }
-        }
-
-        if (exyde_handle_close(xch) != 0) { printf("init: micro cap FAIL code=95\n"); return 95; }
-
-        printf("init: micro ipc cap ok\n");
-
-        /* ---- spawn / wait (Phase 11.5.2) ------------------------- */
-
-        /* Create a channel that we will pass to the child. */
-        exyde_handle_t boot_ch = exyde_ipc_create(16, 2);
-        if (boot_ch == EXYDE_HANDLE_INVALID) {
-            printf("init: micro spawn FAIL bootstrap create\n");
-            return 110;
-        }
-
-        /* Spawn the placeholder "test" ELF (currently: main returns 0). */
-        exyde_handle_t child = exyde_spawn("test", boot_ch);
-        if (child == EXYDE_HANDLE_INVALID) {
-            printf("init: micro spawn FAIL errno=%d\n", errno);
-            return 111;
-        }
-
-        int code = exyde_wait(child);
-        if (code != 0) {
-            printf("init: micro spawn FAIL wait code=%d\n", code);
-            return 112;
-        }
-
-        /* The parent's own copy of boot_ch is still open and usable. */
-        char probe[16] = "p";
-        if (exyde_ipc_try_send(boot_ch, probe, 16) != 0) {
-            printf("init: micro spawn FAIL bootstrap not duplicated\n");
-            return 113;
-        }
-
-        if (exyde_handle_close(boot_ch) != 0) return 114;
-        if (exyde_handle_close(child)   != 0) return 115;
-
-        printf("init: micro spawn ok\n");
-    }
-
+    printf("init: all services OK\n");
     return 0;
 }
