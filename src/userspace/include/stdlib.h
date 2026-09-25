@@ -25,6 +25,19 @@ void  qsort(void *base, size_t nmemb, size_t size,
 void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
               int (*compar)(const void *, const void *));
 
+/* Environment.
+ *
+ * `environ` points at the process environment array.  Before the first
+ * mutation it refers directly to the initial envp built by the kernel;
+ * setenv()/unsetenv() copy it to the heap on first use.  Strings from
+ * the initial envp are never free()d.
+ *
+ * getenv() performs a linear scan and never allocates. */
+extern char **environ;
+char *getenv(const char *name);
+int   setenv(const char *name, const char *value, int overwrite);
+int   unsetenv(const char *name);
+
 /* Process control */
 void  exit(int status) __attribute__((noreturn));
 void  abort(void) __attribute__((noreturn));

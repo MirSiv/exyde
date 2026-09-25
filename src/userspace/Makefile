@@ -30,6 +30,7 @@ C_SRCS := \
     libc/errno.c \
     libc/string.c \
     libc/stdlib.c \
+    libc/env.c \
     libc/unistd.c \
     libc/stdio.c \
     init/init.c

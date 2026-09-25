@@ -14,6 +14,10 @@
 ; SysV AMD64: main(argc, argv, envp) in RDI/RSI/RDX.  We align RSP
 ; to 16 before 'call', so at main's entry RSP % 16 == 8 (the call
 ; pushed 8 bytes), as the ABI requires.
+;
+; The same envp pointer is stored into libc's `environ` before main()
+; runs, so that getenv()/setenv()/unsetenv() see the initial
+; environment regardless of whether main() looks at its third arg.
 
 BITS 64
 
@@ -21,6 +25,7 @@ section .text
 global _start
 extern main
 extern _exit
+extern environ
 
 _start:
     xor     rbp, rbp                ; terminate frame chain
@@ -29,6 +34,8 @@ _start:
     lea     rsi, [rsp + 8]          ; argv
     lea     rax, [rdi + 1]          ; argc + 1
     lea     rdx, [rsi + rax*8]      ; envp = argv + (argc + 1) * 8
+
+    mov     [rel environ], rdx      ; environ = envp (before main)
 
     and     rsp, -16
     call    main

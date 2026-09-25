@@ -21,6 +21,9 @@ pid_t   getpid(void);
 
 void   *sbrk(long increment);
 
+/* POSIX declares environ in <unistd.h>; also declared in <stdlib.h>. */
+extern char **environ;
+
 void    _exit(int status) __attribute__((noreturn));
 
 #endif /* EXYDE_USERSPACE_UNISTD_H */

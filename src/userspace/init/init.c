@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <errno.h>
 
-/* init for Phase 11.3.0 (snprintf/sprintf). */
+/* init for Phase 11.3.1 (environment). */
 
 static int cmp_int(const void *a, const void *b) {
     int x = *(const int *)a;
@@ -20,7 +20,7 @@ static int cmp_str(const void *a, const void *b) {
 }
 
 int main(int argc, char **argv, char **envp) {
-    (void)argc; (void)argv; (void)envp;
+    (void)argc; (void)argv;
 
     printf("init: hello from userspace (C)\n");
 
@@ -89,8 +89,6 @@ int main(int argc, char **argv, char **envp) {
            strerror(EINVAL),
            strerror(ERANGE),
            strerror(ENOSYS));
-    /* strerror returns a non-reentrant static buffer; copy each
-     * result out before calling strerror again. */
     {
         char s1[64], s2[64];
         strcpy(s1, strerror(999));
@@ -110,26 +108,21 @@ int main(int argc, char **argv, char **envp) {
         printf("init: snprintf [%s] [%d]\n", sb, n);
     }
     {
-        /* Truncation: 14 chars wanted, buffer 8 -> 7 chars + NUL.
-         * Return value must still be the un-truncated length (14). */
         char tb[8];
         int tn = snprintf(tb, sizeof(tb), "abcdefghijklmn");
         printf("init: snprintf trunc [%s] [%d]\n", tb, tn);
     }
     {
-        /* n=1: only the NUL is written, full length returned. */
         char ob[1];
         int on = snprintf(ob, sizeof(ob), "xyz");
         printf("init: snprintf n=1 [%d] [%d]\n",
                (int)(unsigned char)ob[0], on);
     }
     {
-        /* n=0 + NULL: format is measured but not written anywhere. */
         int zn = snprintf(NULL, 0, "%d-%d-%d", 1, 22, 333);
         printf("init: snprintf n=0 [%d]\n", zn);
     }
     {
-        /* sprintf shares the formatting core. */
         char sp[64];
         int sn = sprintf(sp, "x=%d y=%s", -7, "ok");
         printf("init: sprintf [%s] [%d]\n", sp, sn);
@@ -180,5 +173,154 @@ int main(int argc, char **argv, char **envp) {
     free(d);
 
     printf("init: heap ok\n");
+
+    /* --- environment regression (Phase 11.3.1) ---
+     *
+     * Deliberately the LAST block in main(): the ENOMEM case below
+     * exhausts the arena on purpose and never frees the exhaust
+     * allocations.  That is fine because the process exits right
+     * after, and the heap is torn down with it.  Nothing else in
+     * init runs once the arena is exhausted, so printf (which does
+     * not allocate) still works.
+     */
+    {
+        /* (8) crt0 must have installed environ == envp before main. */
+        if (environ != envp) {
+            printf("init: env FAIL environ != envp\n");
+            return 10;
+        }
+
+        /* (1) getenv of an existing initial-env variable. */
+        const char *path0 = getenv("PATH");
+        printf("init: env get initial [%s]\n", path0 ? path0 : "(null)");
+        if (!path0 || strcmp(path0, "/") != 0) return 11;
+
+        /* (2) getenv of a missing variable. */
+        char *miss = getenv("EXYDE_NO_SUCH_VAR");
+        printf("init: env get missing [%s]\n", miss ? miss : "(null)");
+        if (miss) return 12;
+
+        /* (3) setenv overwrite=0 must not clobber an existing value. */
+        int r3 = setenv("PATH", "/overwritten", 0);
+        const char *path1 = getenv("PATH");
+        printf("init: env setenv nooverwrite [%d] [%s]\n",
+               r3, path1 ? path1 : "(null)");
+        if (r3 != 0 || !path1 || strcmp(path1, "/") != 0) return 13;
+
+        /* (4) setenv overwrite=1 must replace it.  The original "/"
+         * lives on the initial envp stack, so no free() must occur;
+         * the new value is heap-owned. */
+        int r4 = setenv("PATH", "/new", 1);
+        const char *path2 = getenv("PATH");
+        printf("init: env setenv overwrite [%d] [%s]\n",
+               r4, path2 ? path2 : "(null)");
+        if (r4 != 0 || !path2 || strcmp(path2, "/new") != 0) return 14;
+
+        /* (5) setenv of a brand-new variable. */
+        int r5 = setenv("EXYDE", "1", 0);
+        const char *e1 = getenv("EXYDE");
+        printf("init: env setenv new [%d] [%s]\n",
+               r5, e1 ? e1 : "(null)");
+        if (r5 != 0 || !e1 || strcmp(e1, "1") != 0) return 15;
+
+        /* (6) unsetenv of an existing variable. */
+        int r6 = unsetenv("EXYDE");
+        const char *e2 = getenv("EXYDE");
+        printf("init: env unset existing [%d] [%s]\n",
+               r6, e2 ? e2 : "(null)");
+        if (r6 != 0 || e2) return 16;
+
+        /* (7) unsetenv of a missing variable is a no-op success. */
+        int r7 = unsetenv("EXYDE_NO_SUCH_VAR");
+        printf("init: env unset missing [%d]\n", r7);
+        if (r7 != 0) return 17;
+
+        /* (8) EINVAL on empty name. */
+        errno = 0;
+        int r8 = setenv("", "x", 0);
+        printf("init: env einval empty [%d] [%d]\n", r8, errno);
+        if (r8 != -1 || errno != EINVAL) return 18;
+
+        /* (9) EINVAL on name containing '='. */
+        errno = 0;
+        int r9 = setenv("A=B", "x", 0);
+        printf("init: env einval eq [%d] [%d]\n", r9, errno);
+        if (r9 != -1 || errno != EINVAL) return 19;
+
+        /* (10) growth path: many setenv, verify, many unsetenv, then
+         * check that environ survived realloc and older entries stay. */
+        for (int i = 0; i < 20; ++i) {
+            char nm[32], vl[32];
+            snprintf(nm, sizeof nm, "EXYDE_TEST_%d", i);
+            snprintf(vl, sizeof vl, "v%d", i);
+            if (setenv(nm, vl, 1) != 0) {
+                printf("init: env growth setenv failed at %d\n", i);
+                return 20;
+            }
+        }
+        for (int i = 0; i < 20; ++i) {
+            char nm[32], want[32];
+            snprintf(nm,   sizeof nm,   "EXYDE_TEST_%d", i);
+            snprintf(want, sizeof want, "v%d", i);
+            char *got = getenv(nm);
+            if (!got || strcmp(got, want) != 0) {
+                printf("init: env growth verify failed at %d\n", i);
+                return 21;
+            }
+        }
+        const char *path3 = getenv("PATH");
+        if (!path3 || strcmp(path3, "/new") != 0) {
+            printf("init: env PATH lost after growth\n");
+            return 22;
+        }
+        printf("init: env growth ok (20 vars, PATH preserved)\n");
+
+        for (int i = 0; i < 20; ++i) {
+            char nm[32];
+            snprintf(nm, sizeof nm, "EXYDE_TEST_%d", i);
+            if (unsetenv(nm) != 0) {
+                printf("init: env shrink unsetenv failed at %d\n", i);
+                return 23;
+            }
+        }
+
+        /* (11) ENOMEM.
+         *
+         * The boundary-tag allocator grows the arena by sbrk() in
+         * 64 KiB chunks, so a single exhausted malloc(64 KiB) can
+         * leave large free fragments behind.  Walk the request size
+         * down from 64 KiB to 16 so those fragments get consumed
+         * too, then setenv's own allocation must fail.
+         *
+         * The exhaust allocations are intentionally never freed --
+         * see the block comment above. */
+        size_t sz = 64 * 1024;
+        int n_holes = 0;
+        while (sz >= 16) {
+            void *p = malloc(sz);
+            if (p) { ++n_holes; continue; }
+            sz /= 2;
+        }
+
+        errno = 0;
+        int r11 = setenv("EXYDE_ENOMEM", "x", 0);
+        int e11 = errno;
+        if (r11 != -1 || e11 != ENOMEM) {
+            printf("init: env enomem unexpected [%d] [%d] holes=%d\n",
+                   r11, e11, n_holes);
+            return 24;
+        }
+        if (getenv("EXYDE_ENOMEM")) {
+            printf("init: env enomem left a stale entry\n");
+            return 25;
+        }
+        printf("init: env enomem ok (holes=%d)\n", n_holes);
+
+        /* (12) getenv still works after everything. */
+        const char *path4 = getenv("PATH");
+        printf("init: env final PATH [%s]\n", path4 ? path4 : "(null)");
+        if (!path4 || strcmp(path4, "/new") != 0) return 26;
+    }
+
     return 0;
 }
