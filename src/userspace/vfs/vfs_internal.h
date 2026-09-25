@@ -3,10 +3,8 @@
 
 /* Userspace-side copy of the Exyde VFS types and interface.
  *
- * Copied from src/kernel/include/exyde/vfs.h in Phase 11.5.3.  The
- * two will diverge from here on: the kernel copy disappears in
- * 11.5.6, and this is the one that keeps evolving.  Keep them in
- * sync until then. */
+ * Originally copied from the kernel VFS in Phase 11.5.3.  The kernel
+ * copy was removed in 11.5.6; this is the only VFS now. */
 
 #include <stdint.h>
 #include <stddef.h>
