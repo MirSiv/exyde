@@ -5,8 +5,6 @@
 #include <exyde/thread.h>
 #include <exyde/sched.h>
 #include <exyde/process.h>
-#include <exyde/fd.h>
-#include <exyde/vfs.h>
 #include <exyde/uaccess.h>
 #include <exyde/pmm.h>
 #include <exyde/vmm.h>
@@ -17,7 +15,7 @@
 #include <exyde/elf_table.h>
 #include <exyde/panic.h>
 
-/* One-shot kernel bounce buffer for the transitional SYS_READ / SYS_WRITE.
+/* One-shot kernel bounce buffer for SYS_KPUTS.
  * Bigger requests are rejected with -EINVAL. */
 #define SYSCALL_IO_MAX  4096u
 
@@ -638,66 +636,6 @@ static sysret_t sys_kputs(u64 buf_u, u64 count, u64 a2, u64 a3, u64 a4) {
     return (sysret_t)count;
 }
 
-static sysret_t sys_read(u64 fd, u64 buf_u, u64 count, u64 a3, u64 a4) {
-    (void)a3; (void)a4;
-    process_t *p = current_process();
-    if (!p) return SYSRET_ERR(EPERM);
-
-    file_t *f = fd_get(&p->fds, (int)fd);
-    if (!f) return SYSRET_ERR(EBADF);
-    if (count == 0) return 0;
-    if (count > SYSCALL_IO_MAX) return SYSRET_ERR(EINVAL);
-
-    u8 kbuf[SYSCALL_IO_MAX];
-    i64 r = vfs_read(f, kbuf, (size_t)count);
-    if (r < 0) return SYSRET_ERR((u64)-r);
-
-    if (copy_to_user(p->space, (vaddr_t)buf_u, kbuf, (size_t)r) < 0)
-        return SYSRET_ERR(EFAULT);
-    return (sysret_t)r;
-}
-
-static sysret_t sys_open(u64 path_u, u64 flags, u64 mode, u64 a3, u64 a4) {
-    (void)a3; (void)a4;
-    process_t *p = current_process();
-    if (!p) return SYSRET_ERR(EPERM);
-
-    char path[VFS_PATH_MAX + 1];
-    int sr = strncpy_from_user(p->space, path, (vaddr_t)path_u, sizeof(path));
-    if (sr < 0) return SYSRET_ERR((u64)-sr);
-
-    file_t *f = (file_t *)0;
-    int r = vfs_open(path, (u32)flags, (u32)mode, &f);
-    if (r < 0) return SYSRET_ERR((u64)-r);
-
-    int fd = fd_alloc(&p->fds, f);
-    if (fd < 0) {
-        vfs_close(f);
-        return SYSRET_ERR(EMFILE);
-    }
-    return (sysret_t)fd;
-}
-
-static sysret_t sys_close(u64 fd, u64 a1, u64 a2, u64 a3, u64 a4) {
-    (void)a1; (void)a2; (void)a3; (void)a4;
-    process_t *p = current_process();
-    if (!p) return SYSRET_ERR(EPERM);
-    int r = fd_close(&p->fds, (int)fd);
-    if (r < 0) return SYSRET_ERR((u64)-r);
-    return 0;
-}
-
-static sysret_t sys_lseek(u64 fd, u64 off, u64 whence, u64 a3, u64 a4) {
-    (void)a3; (void)a4;
-    process_t *p = current_process();
-    if (!p) return SYSRET_ERR(EPERM);
-    file_t *f = fd_get(&p->fds, (int)fd);
-    if (!f) return SYSRET_ERR(EBADF);
-    i64 r = vfs_seek(f, (i64)off, (int)whence);
-    if (r < 0) return SYSRET_ERR((u64)-r);
-    return (sysret_t)r;
-}
-
 static sysret_t sys_brk(u64 new_brk, u64 a1, u64 a2, u64 a3, u64 a4) {
     (void)a1; (void)a2; (void)a3; (void)a4;
     process_t *p = current_process();
@@ -771,10 +709,6 @@ static const syscall_fn_t syscall_table[SYSCALL_MAX] = {
 
     /* Transitional, remove in 11.5.6 */
     [SYS_KPUTS]         = sys_kputs,
-    [SYS_READ]          = sys_read,
-    [SYS_OPEN]          = sys_open,
-    [SYS_CLOSE]         = sys_close,
-    [SYS_LSEEK]         = sys_lseek,
     [SYS_BRK]           = sys_brk,
 };
 

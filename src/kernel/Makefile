@@ -56,10 +56,6 @@ C_SRCS := \
     core/process.c \
     core/handle.c \
     core/syscall.c \
-    core/vfs.c \
-    core/ramfs.c \
-    core/fd.c \
-    core/condev.c \
     core/exec.c \
     core/uaccess.c \
     core/extable.c \

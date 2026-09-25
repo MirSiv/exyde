@@ -20,14 +20,10 @@
 #include <exyde/semaphore.h>
 #include <exyde/condvar.h>
 #include <exyde/channel.h>
-#include <exyde/condev.h>
 #include <exyde/exec.h>
 #include <exyde/init_elf.h>
 #include <exyde/elf_table.h>
 #include <exyde/uaccess.h>
-#include <exyde/vfs.h>
-#include <exyde/ramfs.h>
-#include <exyde/fd.h>
 #include <exyde/uaccess.h>
 
 extern char __bss_start[];
@@ -403,7 +399,7 @@ static void user_fault_handler(const user_fault_t *f) {
 
 static void user_thread_entry(void *arg) {
     process_t *p = (process_t *)arg;
-    arch_enter_user_mode(p->image.entry, USER_STACK_TOP);
+    arch_enter_user_mode(p->entry, USER_STACK_TOP);
 }
 
 static void ring3_syscall_selftest(void) {
@@ -463,121 +459,6 @@ static void ring3_syscall_selftest(void) {
     process_unref(p);
 
     console_ok("ring3 test: OK (SYSCALL from CPL3, arg passing, ping round-trip)\n");
-}
-
-/* ---- Phase 9: VFS / RAMFS / fd self-test ----------------------------- */
-
-static void vfs_selftest(void) {
-    vnode_t *root = (vnode_t *)0;
-    int r = vfs_resolve("/", &root);
-    if (r < 0) panic("vfs test: resolve /");
-    if (root->type != VFS_TYPE_DIR) panic("vfs test: / not a dir");
-    vnode_unref(root);
-
-    if (vfs_mkdir("/tmp", 0755) < 0) panic("vfs test: mkdir /tmp");
-
-    file_t *f = (file_t *)0;
-    if (vfs_open("/tmp/hello", VFS_O_CREAT | VFS_O_WRONLY, 0644, &f) < 0)
-        panic("vfs test: open create");
-
-    const char *msg = "hello exyde\n";
-    i64 n = vfs_write(f, msg, 12);
-    if (n != 12) panic("vfs test: write count");
-    if (f->offset != 12) panic("vfs test: offset after write");
-    vfs_close(f);
-
-    if (vfs_open("/tmp/hello", VFS_O_RDONLY, 0, &f) < 0)
-        panic("vfs test: open read");
-    char buf[32];
-    n = vfs_read(f, buf, sizeof(buf));
-    if (n != 12) panic("vfs test: read count");
-    for (int i = 0; i < 12; ++i)
-        if (buf[i] != msg[i]) panic("vfs test: read content");
-    vfs_close(f);
-
-    if (vfs_open("/tmp/hello", VFS_O_RDONLY, 0, &f) < 0)
-        panic("vfs test: open seek");
-    if (vfs_seek(f, 6, VFS_SEEK_SET) != 6) panic("vfs test: seek SET");
-    n = vfs_read(f, buf, 5);
-    if (n != 5) panic("vfs test: read after seek");
-    if (buf[0]!='e' || buf[1]!='x' || buf[2]!='y' || buf[3]!='d' || buf[4]!='e')
-        panic("vfs test: content after seek");
-    if (vfs_seek(f, -6, VFS_SEEK_END) != 6) panic("vfs test: seek END");
-    vfs_close(f);
-
-    r = vfs_open("/tmp/hello", VFS_O_CREAT | VFS_O_EXCL | VFS_O_WRONLY, 0644, &f);
-    if (r != -EEXIST) panic("vfs test: O_EXCL accepted existing");
-
-    vnode_t *tmp = (vnode_t *)0;
-    if (vfs_resolve("/tmp", &tmp) < 0) panic("vfs test: resolve /tmp");
-    char name[VFS_NAME_MAX + 1];
-    if (tmp->ops->readdir(tmp, 0, name, sizeof(name)) < 0)
-        panic("vfs test: readdir 0");
-    if (name[0]!='h' || name[1]!='e' || name[2]!='l' ||
-        name[3]!='l' || name[4]!='o' || name[5]!='\0')
-        panic("vfs test: readdir content");
-    if (tmp->ops->readdir(tmp, 1, name, sizeof(name)) != -ENOENT)
-        panic("vfs test: readdir past end");
-    vnode_unref(tmp);
-
-    if (vfs_unlink("/tmp/hello") < 0) panic("vfs test: unlink");
-    vnode_t *gone = (vnode_t *)0;
-    if (vfs_resolve("/tmp/hello", &gone) != -ENOENT)
-        panic("vfs test: resolve after unlink");
-
-    file_t *inner = (file_t *)0;
-    if (vfs_open("/tmp/inner", VFS_O_CREAT | VFS_O_WRONLY, 0644, &inner) < 0)
-        panic("vfs test: create inner");
-    vfs_close(inner);
-
-    if (vfs_rmdir("/tmp") != -ENOTEMPTY)
-        panic("vfs test: rmdir non-empty accepted");
-    if (vfs_unlink("/tmp/inner") < 0) panic("vfs test: unlink inner");
-    if (vfs_rmdir("/tmp") < 0)        panic("vfs test: rmdir empty");
-
-    console_ok("vfs test: OK (mkdir, create, write, read, seek, readdir, unlink, rmdir)\n");
-}
-
-static void fd_selftest(void) {
-    fd_table_t t;
-    fd_table_init(&t);
-
-    if (vfs_mkdir("/fdtest", 0755) < 0) panic("fd test: mkdir");
-
-    file_t *a = (file_t *)0;
-    if (vfs_open("/fdtest/a", VFS_O_CREAT | VFS_O_RDWR, 0644, &a) < 0)
-        panic("fd test: create a");
-    int fd_a = fd_alloc(&t, a);
-    if (fd_a != 0) panic("fd test: first fd != 0");
-
-    file_t *b = (file_t *)0;
-    if (vfs_open("/fdtest/b", VFS_O_CREAT | VFS_O_RDWR, 0644, &b) < 0)
-        panic("fd test: create b");
-    int fd_b = fd_alloc(&t, b);
-    if (fd_b != 1) panic("fd test: second fd != 1");
-
-    if (fd_get(&t, 0) != a) panic("fd test: get 0");
-    if (fd_get(&t, 1) != b) panic("fd test: get 1");
-    if (fd_get(&t, 2) != (file_t *)0) panic("fd test: get 2 should be NULL");
-
-    if (fd_close(&t, 0) != 0) panic("fd test: close 0");
-    if (fd_get(&t, 0) != (file_t *)0) panic("fd test: get 0 after close");
-    if (fd_close(&t, 0) != -EBADF) panic("fd test: double close accepted");
-
-    file_t *c = (file_t *)0;
-    if (vfs_open("/fdtest/c", VFS_O_CREAT | VFS_O_RDWR, 0644, &c) < 0)
-        panic("fd test: create c");
-    int fd_c = fd_alloc(&t, c);
-    if (fd_c != 0) panic("fd test: lowest free not reused");
-
-    fd_table_destroy(&t);
-
-    if (vfs_unlink("/fdtest/a") < 0) panic("fd test: unlink a");
-    if (vfs_unlink("/fdtest/b") < 0) panic("fd test: unlink b");
-    if (vfs_unlink("/fdtest/c") < 0) panic("fd test: unlink c");
-    if (vfs_rmdir("/fdtest") < 0) panic("fd test: rmdir");
-
-    console_ok("fd test: OK (alloc, get, close, reuse lowest, table destroy)\n");
 }
 
 static void userspace_selftest(void) {
@@ -693,16 +574,6 @@ void kmain(u32 magic, u64 mb_info_addr) {
     sched_selftest();
     sync_selftest();
     channel_selftest();
-    vfs_init();
-    vnode_t *ramfs_root = ramfs_create_root();
-    if (!ramfs_root) panic("vfs: ramfs_create_root failed");
-    vfs_mount_root(ramfs_root);
-    vfs_selftest();
-    fd_selftest();
-
-    condev_init();
-    if (!condev_get()) panic("condev init failed");
-
     syscall_arch_init();
     ring3_syscall_selftest();
     userspace_selftest();

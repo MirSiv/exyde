@@ -55,12 +55,8 @@
  * Phase 11.5.6. */
 #define SYS_KPUTS          1    /* (buf, len)               -> bytes       */
 
-/* ---- transitional: VFS / fd / brk (remove in 11.5.6) --------------- */
+/* ---- transitional (remove in 11.5.6c) ------------------------------ */
 
-#define SYS_READ           6
-#define SYS_OPEN           7
-#define SYS_CLOSE          8
-#define SYS_LSEEK          9
 #define SYS_BRK            11
 
 #define SYSCALL_MAX        26

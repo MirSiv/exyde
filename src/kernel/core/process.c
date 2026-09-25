@@ -6,19 +6,11 @@
 #include <exyde/handle.h>
 #include <exyde/sched.h>
 #include <exyde/arch.h>
+#include <exyde/elf.h>
 #include <exyde/panic.h>
 
 static u64 next_pid = 1;
 
-/* Release kinds owned by the kernel for a dying process.
- *
- * CHANNEL: destroy the channel_t.  Only the owning handle does this;
- * DUPLICATE copies in the same table have owns_object == 0 and are
- * skipped (see handle_table_destroy).
- *
- * PROCESS: drop the reference that the parent's handle held.  This
- * is how a process that exited before its handle was closed finally
- * gets destroyed. */
 static void handle_release(u32 kind, void *object) {
     if (kind == HANDLE_KIND_CHANNEL) {
         channel_destroy((channel_t *)object);
@@ -44,10 +36,6 @@ process_t *process_create_from_elf(const char *name,
         return (process_t *)0;
     }
 
-    /* Copy `name` into the heap.  The caller's buffer (typically a
-     * stack frame in sys_spawn) does not outlive the call, but
-     * p->name and t->name are read long afterward -- e.g. from the
-     * panic dump or from any future process listing. */
     size_t name_len = 0;
     while (name && name[name_len]) ++name_len;
     name_len += 1;
@@ -62,13 +50,13 @@ process_t *process_create_from_elf(const char *name,
     p->pid              = next_pid++;
     p->name             = name_copy;
     p->space            = space;
-    p->image            = img;
+    p->entry            = img.entry;
     p->main_thread      = (thread_t *)0;
     p->initial_rsp      = 0;
-    p->brk              = (vaddr_t)(img.load_base + img.load_size);
 
     vaddr_t m = (vaddr_t)(img.load_base + img.load_size);
     p->next_map_va      = (m + 0xFFFF) & ~((vaddr_t)0xFFFF);
+    p->brk              = m;
 
     p->refcount         = 1;
     p->exit_code        = 0;
@@ -76,7 +64,6 @@ process_t *process_create_from_elf(const char *name,
     p->bootstrap_handle = HANDLE_INVALID;
 
     handle_table_init(&p->handles, handle_release);
-    fd_table_init(&p->fds);
     waitq_init(&p->waiters);
 
     return p;
@@ -89,7 +76,7 @@ void process_ref(process_t *p) {
 
 void process_unref(process_t *p) {
     if (!p) return;
-    if (p->refcount == 0) return;   /* defensive */
+    if (p->refcount == 0) return;
     if (--p->refcount == 0) process_destroy(p);
 }
 
@@ -111,7 +98,6 @@ void process_exit(process_t *p, int code) {
 void process_destroy(process_t *p) {
     if (!p) return;
     handle_table_destroy(&p->handles);
-    fd_table_destroy(&p->fds);
     vmm_space_unref(p->space);
     if (p->name) exy_free((void *)p->name);
     exy_free(p);

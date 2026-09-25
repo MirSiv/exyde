@@ -6,8 +6,6 @@
 #include <exyde/pmm.h>
 #include <exyde/heap.h>
 #include <exyde/user.h>
-#include <exyde/condev.h>
-#include <exyde/fd.h>
 #include <exyde/handle.h>
 #include <exyde/arch.h>
 #include <exyde/uaccess.h>
@@ -109,27 +107,7 @@ out:
 
 static void user_thread_entry(void *arg) {
     process_t *p = (process_t *)arg;
-    arch_enter_user_mode(p->image.entry, p->initial_rsp);
-}
-
-static bool process_open_console_fds(process_t *p) {
-    vnode_t *cons = condev_ref();
-    if (!cons) return false;
-
-    for (int i = 0; i < 3; ++i) {
-        if (i > 0) vnode_ref(cons);   /* fd 0 already holds the first ref */
-        file_t *f = (file_t *)exy_zalloc(sizeof(file_t));
-        if (!f) { vnode_unref(cons); return false; }
-        f->vn       = cons;
-        f->offset   = 0;
-        f->flags    = VFS_O_RDWR;
-        f->refcount = 1;
-        if (fd_alloc(&p->fds, f) != i) {
-            vfs_close(f);
-            return false;
-        }
-    }
-    return true;
+    arch_enter_user_mode(p->entry, p->initial_rsp);
 }
 
 process_t *process_spawn(const char *name,
@@ -138,11 +116,6 @@ process_t *process_spawn(const char *name,
                          int envc, const char *const *envp) {
     process_t *p = process_create_from_elf(name, elf, elf_size);
     if (!p) return (process_t *)0;
-
-    if (!process_open_console_fds(p)) {
-        process_destroy(p);
-        return (process_t *)0;
-    }
 
     vaddr_t stack_top = USER_STACK_TOP_INIT;
     if (!map_user_stack(p->space, stack_top, EXEC_STACK_PAGES)) {

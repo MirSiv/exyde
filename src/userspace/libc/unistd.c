@@ -15,23 +15,25 @@ static long posix_ret(long r) {
     return r;
 }
 
-/* fd 0/1/2 route to the kernel console via the transitional
- * SYS_READ / SYS_WRITE.  fd >= 3 route through libvfs to exy-vfs,
- * using the local fd table to translate local fd -> server fd.
+/* fd 0/1/2 are console.  Writes go to the console server if one is
+ * wired up, otherwise through SYS_KPUTS (kernel fallback).  Reads of
+ * fd 0 need the console server; there is no kernel input path any
+ * more.  close/lseek on 0/1/2 are POSIX-style no-op / ESPIPE.
  *
- * open() always goes through libvfs; there is no longer a POSIX
- * open that touches the kernel VFS.  A caller that has not called
- * vfs_client_init() gets ENOSYS from libvfs. */
+ * fd >= 3 route through libvfs to exy-vfs, using the local fd table
+ * to translate local fd -> server fd.  open() always goes through
+ * libvfs; a caller that has not called vfs_client_init() gets ENOSYS
+ * from libvfs. */
 
 ssize_t read(int fd, void *buf, size_t count) {
     if (fd >= 0 && fd < 3) {
-        if (console_client_ready()) {
-            if (fd == STDIN_FILENO) return console_client_read(buf, count);
-            /* stdout/stderr are write-only; fall through to kernel
-             * which will return the appropriate error. */
+        /* Only stdin is readable.  If a console server is up, ask it;
+         * otherwise there is no source of input in Phase 11.5.6. */
+        if (fd == STDIN_FILENO && console_client_ready()) {
+            return console_client_read(buf, count);
         }
-        long r = __exyde_syscall(SYS_READ, fd, (long)buf, (long)count, 0, 0);
-        return (ssize_t)posix_ret(r);
+        errno = EBADF;
+        return -1;
     }
     uint32_t sf;
     if (vfs_fdtab_get(fd, &sf) != 0) return -1;
@@ -66,8 +68,9 @@ int open(const char *path, int flags, ...) {
 
 int close(int fd) {
     if (fd >= 0 && fd < 3) {
-        long r = __exyde_syscall(SYS_CLOSE, fd, 0, 0, 0, 0);
-        return (int)posix_ret(r);
+        /* POSIX: closing stdin/stdout/stderr is a no-op success.
+         * There is no kernel fd to release any more. */
+        return 0;
     }
     uint32_t sf;
     if (vfs_fdtab_get(fd, &sf) != 0) return -1;
@@ -77,8 +80,9 @@ int close(int fd) {
 
 off_t lseek(int fd, off_t offset, int whence) {
     if (fd >= 0 && fd < 3) {
-        long r = __exyde_syscall(SYS_LSEEK, fd, offset, whence, 0, 0);
-        return (off_t)posix_ret(r);
+        /* stdin/stdout/stderr are character devices; not seekable. */
+        errno = ESPIPE;
+        return -1;
     }
     uint32_t sf;
     if (vfs_fdtab_get(fd, &sf) != 0) return -1;
