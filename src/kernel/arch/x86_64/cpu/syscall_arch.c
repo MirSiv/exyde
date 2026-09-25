@@ -47,9 +47,18 @@ void syscall_arch_init(void) {
 
     /* STAR:
      *   [47:32] = 0x08 (SYSCALL CS; SS = CS+8 = 0x10)
-     *   [63:48] = 0x10 (SYSRET base; CS = base+16 = 0x20,
-     *                                SS = base+8  = 0x18)  */
-    u64 star = ((u64)0x08u << 32) | ((u64)0x10u << 48);
+     *   [63:48] = 0x13 (SYSRET base; CS = base+16 = 0x23,
+     *                                SS = base+8  = 0x1B)
+     *
+     * Base is 0x13 rather than the more common 0x10 so that the
+     * computed SS selector already has RPL=3 (0x13 + 8 = 0x1B) even
+     * on CPUs or emulators that do not force SS.RPL to 3 on SYSRET.
+     * With base=0x10 and no RPL forcing, SS comes out as 0x18; the
+     * next IRQ from user mode then pushes that SS into the IRQ frame
+     * and iretq faults with #GP, err = 0x18.  The SYSCALL side is
+     * unaffected: STAR[47:32] stays 0x08, so SYSCALL CS = 0x08,
+     * SS = 0x10, both RPL = 0. */
+    u64 star = ((u64)0x08u << 32) | ((u64)0x13u << 48);
     wrmsr(MSR_STAR, star);
 
     wrmsr(MSR_LSTAR, (u64)(uintptr_t)&syscall_entry);
