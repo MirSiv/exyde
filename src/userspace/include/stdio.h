@@ -25,8 +25,13 @@
 
 #define EOF (-1)
 
-int putchar(int c);
-int puts(const char *s);
-int printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+int  putchar(int c);
+int  puts(const char *s);
+int  printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/* Print "<s>: <strerror(errno)>" to stderr (fd 2), followed by '\n'.
+ * If `s` is NULL or empty, only the message is printed.  errno is not
+ * modified. */
+void perror(const char *s);
 
 #endif /* EXYDE_USERSPACE_STDIO_H */

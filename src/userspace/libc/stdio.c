@@ -3,6 +3,8 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <errno.h>
+#include <string.h>
 
 /* write(1)-backed stdio.  Phase 11.2.0: printf understands flags,
  * width, precision, and the hh/h/l/ll/z/t/j length modifiers.
@@ -80,6 +82,23 @@ static int emit_repeat(int c, int n, int *count) {
 #define L_J    7
 
 /* --- printf --------------------------------------------------------- */
+
+/* Print "<s>: <strerror(errno)>" to stderr, followed by '\n'.
+ * If `s` is NULL or empty, only the message is printed.  errno is
+ * captured on entry and not modified. */
+void perror(const char *s) {
+    int saved = errno;
+    const char *msg = strerror(saved);
+
+    if (s && *s) {
+        size_t n = strlen(s);
+        if (write(STDERR_FILENO, s, n) != (ssize_t)n) return;
+        if (write(STDERR_FILENO, ": ", 2) != 2) return;
+    }
+    size_t m = strlen(msg);
+    if (write(STDERR_FILENO, msg, m) != (ssize_t)m) return;
+    (void)write(STDERR_FILENO, "\n", 1);
+}
 
 int printf(const char *fmt, ...) {
     va_list ap;

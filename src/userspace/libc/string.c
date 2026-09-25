@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 
 /* --- memory -------------------------------------------------------- */
 
@@ -179,6 +180,72 @@ char *strtok(char *s, const char *delim) {
 }
 
 /* --- duplicate ----------------------------------------------------- */
+
+/* errno -> short human-readable string.  Never NULL.  Unknown codes
+ * get "Unknown error <n>" written into a static buffer; the string is
+ * overwritten by the next unknown-code call, which matches the classic
+ * non-reentrant strerror() behaviour that programs already expect. */
+char *strerror(int errnum) {
+    static char unknown[32];
+
+    switch (errnum) {
+    case E_OK:         return "Success";
+    case EPERM:        return "Operation not permitted";
+    case ENOENT:       return "No such file or directory";
+    case ESRCH:        return "No such process";
+    case EINTR:        return "Interrupted system call";
+    case EIO:          return "Input/output error";
+    case ENXIO:        return "No such device or address";
+    case E2BIG:        return "Argument list too long";
+    case ENOEXEC:      return "Exec format error";
+    case EBADF:        return "Bad file descriptor";
+    case ECHILD:       return "No child processes";
+    case EAGAIN:       return "Resource temporarily unavailable";
+    case ENOMEM:       return "Cannot allocate memory";
+    case EACCES:       return "Permission denied";
+    case EFAULT:       return "Bad address";
+    case EBUSY:        return "Device or resource busy";
+    case EEXIST:       return "File exists";
+    case ENODEV:       return "No such device";
+    case ENOTDIR:      return "Not a directory";
+    case EISDIR:       return "Is a directory";
+    case EINVAL:       return "Invalid argument";
+    case ENFILE:       return "Too many open files in system";
+    case EMFILE:       return "Too many open files";
+    case ENOSPC:       return "No space left on device";
+    case ESPIPE:       return "Illegal seek";
+    case EROFS:        return "Read-only file system";
+    case EPIPE:        return "Broken pipe";
+    case ERANGE:       return "Numerical result out of range";
+    case ENAMETOOLONG: return "File name too long";
+    case ENOSYS:       return "Function not implemented";
+    case ENOTEMPTY:    return "Directory not empty";
+    default: break;
+    }
+
+    /* Hand-rolled itoa for the unknown-code buffer.  We could call
+     * snprintf, but stdio.c is not linked in every consumer of
+     * string.h. */
+    const char *pre = "Unknown error ";
+    int n = 0;
+    while (pre[n]) { unknown[n] = pre[n]; ++n; }
+
+    char digits[12];
+    int dn = 0;
+    unsigned int u;
+    int neg = errnum < 0;
+    if (neg) u = (unsigned int)(-(errnum + 1)) + 1u;
+    else     u = (unsigned int)errnum;
+    if (u == 0) {
+        digits[dn++] = '0';
+    } else {
+        while (u) { digits[dn++] = (char)('0' + (u % 10)); u /= 10; }
+    }
+    if (neg) unknown[n++] = '-';
+    while (dn > 0) unknown[n++] = digits[--dn];
+    unknown[n] = '\0';
+    return unknown;
+}
 
 char *strdup(const char *s) {
     size_t n = strlen(s) + 1;

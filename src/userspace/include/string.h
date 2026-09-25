@@ -33,4 +33,8 @@ char  *strtok(char *s, const char *delim);
 /* Duplicate (uses malloc from stdlib.h) */
 char  *strdup(const char *s);
 
+/* errno -> short human-readable string.  Never returns NULL; unknown
+ * codes yield "Unknown error <n>" in a thread-local-ish static buffer. */
+char  *strerror(int errnum);
+
 #endif /* EXYDE_USERSPACE_STRING_H */

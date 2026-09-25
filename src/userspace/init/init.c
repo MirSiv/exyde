@@ -83,6 +83,26 @@ int main(int argc, char **argv, char **envp) {
            strtol("0xff", NULL, 0),
            strtol("101010", NULL, 2));
 
+    /* --- strerror / perror --- */
+    printf("init: strerror [%s] [%s] [%s] [%s]\n",
+           strerror(ENOENT),
+           strerror(EINVAL),
+           strerror(ERANGE),
+           strerror(ENOSYS));
+    /* strerror returns a non-reentrant static buffer; copy each
+     * result out before calling strerror again. */
+    {
+        char s1[64], s2[64];
+        strcpy(s1, strerror(999));
+        strcpy(s2, strerror(-1));
+        printf("init: strerror unknown [%s] [%s]\n", s1, s2);
+    }
+
+    errno = ENOENT;
+    perror("init: perror-test");
+    errno = 0;
+    perror("init: perror-empty");
+
     /* --- allocator regression --- */
     char *a = (char *)malloc(64);
     char *b = (char *)malloc(64);
