@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <errno.h>
+#include "../libc/internal/syscall.h"
 #include <exyde/micro.h>
 
 /* init for Phase 11.3.1 (environment). */
@@ -468,6 +469,146 @@ int main(int argc, char **argv, char **envp) {
         if (exyde_yield() != 0) return 51;
 
         printf("init: micro map/yield ok\n");
+
+        /* ---- IPC capability transfer (Phase 11.5.1) --------------- */
+
+        /* Build two channels: `xch` is the transport, `data_ch` is
+         * the capability we will send through it. */
+        exyde_handle_t xch      = exyde_ipc_create(16, 2);
+        exyde_handle_t data_ch = exyde_ipc_create(16, 1);
+        if (xch == EXYDE_HANDLE_INVALID || data_ch == EXYDE_HANDLE_INVALID)
+            { printf("init: micro cap FAIL code=60\n"); return 60; }
+
+        /* --- TRANSFER --- */
+        {
+            char msg[16] = "xfer";
+            if (exyde_ipc_send_cap(xch, msg, 16, data_ch,
+                                   EXYDE_IPC_CAP_TRANSFER) != 0)
+                { printf("init: micro cap FAIL code=61\n"); return 61; }
+
+            /* Sender's old handle must now be dead. */
+            char dummy[16] = "z";
+            errno = 0;
+            if (exyde_ipc_try_send(data_ch, dummy, 16) != -1 || errno != EBADF)
+                { printf("init: micro cap FAIL code=62\n"); return 62; }
+
+            /* Receiver picks up the capability. */
+            char rx[16];
+            exyde_handle_t got = EXYDE_HANDLE_INVALID;
+            if (exyde_ipc_recv_cap(xch, rx, 16, &got) != 16) { printf("init: micro cap FAIL code=63\n"); return 63; }
+            if (strcmp(rx, "xfer") != 0) { printf("init: micro cap FAIL code=64\n"); return 64; }
+            if (got == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=65\n"); return 65; }
+
+            /* New handle works: send + recv on it. */
+            char p1[16] = "hi";
+            if (exyde_ipc_try_send(got, p1, 16) != 0) { printf("init: micro cap FAIL code=66\n"); return 66; }
+            char p2[16];
+            if (exyde_ipc_recv(got, p2, 16) != 16) { printf("init: micro cap FAIL code=67\n"); return 67; }
+            if (strcmp(p2, "hi") != 0) { printf("init: micro cap FAIL code=68\n"); return 68; }
+
+            if (exyde_handle_close(got) != 0) { printf("init: micro cap FAIL code=69\n"); return 69; }
+        }
+
+        /* --- DUPLICATE --- */
+        {
+            exyde_handle_t dup_src = exyde_ipc_create(16, 1);
+            if (dup_src == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=70\n"); return 70; }
+
+            char msg[16] = "dup";
+            if (exyde_ipc_send_cap(xch, msg, 16, dup_src,
+                                   EXYDE_IPC_CAP_DUPLICATE) != 0)
+                { printf("init: micro cap FAIL code=71\n"); return 71; }
+
+            /* Sender's original handle must still work. */
+            char p1[16] = "keep";
+            if (exyde_ipc_try_send(dup_src, p1, 16) != 0) { printf("init: micro cap FAIL code=72\n"); return 72; }
+
+            /* Drain that to keep the channel clean. */
+            char p2[16];
+            if (exyde_ipc_recv(dup_src, p2, 16) != 16) { printf("init: micro cap FAIL code=73\n"); return 73; }
+            if (strcmp(p2, "keep") != 0) { printf("init: micro cap FAIL code=74\n"); return 74; }
+
+            /* Receiver gets a copy. */
+            char rx[16];
+            exyde_handle_t got = EXYDE_HANDLE_INVALID;
+            if (exyde_ipc_recv_cap(xch, rx, 16, &got) != 16) { printf("init: micro cap FAIL code=75\n"); return 75; }
+            if (strcmp(rx, "dup") != 0) { printf("init: micro cap FAIL code=76\n"); return 76; }
+            if (got == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=77\n"); return 77; }
+
+            /* Both handles now usable independently. */
+            if (exyde_ipc_try_send(got, p1, 16) != 0) { printf("init: micro cap FAIL code=78\n"); return 78; }
+            /* got and dup_src refer to the SAME channel (DUPLICATE);
+             * it now holds one message, so a second try_send must
+             * fail with EAGAIN. */
+            errno = 0;
+            if (exyde_ipc_try_send(dup_src, p1, 16) != -1 || errno != EAGAIN) { printf("init: micro cap FAIL code=79\n"); return 79; }
+            char p3[16];
+            if (exyde_ipc_recv(dup_src, p3, 16) != 16) { printf("init: micro cap FAIL code=79b\n"); return 79; }
+            if (strcmp(p3, "keep") != 0) { printf("init: micro cap FAIL code=79c\n"); return 79; }
+
+            if (exyde_handle_close(got) != 0) { printf("init: micro cap FAIL code=80\n"); return 80; }
+            if (exyde_handle_close(dup_src) != 0) { printf("init: micro cap FAIL code=81\n"); return 81; }
+        }
+
+        /* --- plain recv on a cap-carrying message refuses (EINVAL) --- */
+        {
+            exyde_handle_t tag = exyde_ipc_create(16, 1);
+            if (tag == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=82\n"); return 82; }
+
+            char msg[16] = "z";
+            if (exyde_ipc_send_cap(xch, msg, 16, tag,
+                                   EXYDE_IPC_CAP_DUPLICATE) != 0)
+                { printf("init: micro cap FAIL code=83\n"); return 83; }
+
+            char rx[16];
+            errno = 0;
+            if (exyde_ipc_try_recv(xch, rx, 16) != -1 || errno != EINVAL)
+                { printf("init: micro cap FAIL code=84\n"); return 84; }
+
+            /* The message must still be in the channel; consume it
+             * properly this time. */
+            exyde_handle_t got = EXYDE_HANDLE_INVALID;
+            if (exyde_ipc_recv_cap(xch, rx, 16, &got) != 16) { printf("init: micro cap FAIL code=85\n"); return 85; }
+            if (got == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=86\n"); return 86; }
+
+            if (exyde_handle_close(got) != 0) { printf("init: micro cap FAIL code=87\n"); return 87; }
+            if (exyde_handle_close(tag) != 0) { printf("init: micro cap FAIL code=88\n"); return 88; }
+        }
+
+        /* --- send without TRANSFER right -> EPERM --- */
+        {
+            /* Plain test handle: created with HANDLE_CREATE via the
+             * kernel, no TRANSFER bit.  We use the raw syscall since
+             * there is no libc wrapper for it. */
+            /* HANDLE_KIND_TEST = 1, HANDLE_RIGHT_READ = 1. */
+            long th = __exyde_syscall(SYS_HANDLE_CREATE, 1, 1, 0, 0, 0);
+            if (th < 0) { printf("init: micro cap FAIL code=89\n"); return 89; }
+
+            char msg[16] = "no";
+            errno = 0;
+            if (exyde_ipc_send_cap(xch, msg, 16, (exyde_handle_t)th,
+                                   EXYDE_IPC_CAP_TRANSFER) != -1 || errno != EPERM)
+                { printf("init: micro cap FAIL code=90\n"); return 90; }
+
+            if (exyde_handle_close((exyde_handle_t)th) != 0) { printf("init: micro cap FAIL code=91\n"); return 91; }
+        }
+
+        /* --- bad action -> EINVAL --- */
+        {
+            exyde_handle_t tmp = exyde_ipc_create(16, 1);
+            if (tmp == EXYDE_HANDLE_INVALID) { printf("init: micro cap FAIL code=92\n"); return 92; }
+
+            char msg[16] = "a";
+            errno = 0;
+            if (exyde_ipc_send_cap(xch, msg, 16, tmp, 99) != -1 || errno != EINVAL)
+                { printf("init: micro cap FAIL code=93\n"); return 93; }
+
+            if (exyde_handle_close(tmp) != 0) { printf("init: micro cap FAIL code=94\n"); return 94; }
+        }
+
+        if (exyde_handle_close(xch) != 0) { printf("init: micro cap FAIL code=95\n"); return 95; }
+
+        printf("init: micro ipc cap ok\n");
     }
 
     return 0;

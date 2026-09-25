@@ -46,6 +46,34 @@ int exyde_ipc_try_recv(exyde_handle_t h, void *buf, unsigned int max_len) {
     return (int)chk(r);
 }
 
+/* ---- IPC with capability transfer ------------------------------- */
+
+int exyde_ipc_send_cap(exyde_handle_t ch,
+                       const void *buf, unsigned int len,
+                       exyde_handle_t cap, unsigned int action) {
+    long r = __exyde_syscall(SYS_IPC_SEND_CAP, ch,
+                             (long)(uintptr_t)buf, len, cap, action);
+    return (int)chk(r);
+}
+
+int exyde_ipc_recv_cap(exyde_handle_t ch,
+                       void *buf, unsigned int max_len,
+                       exyde_handle_t *out_cap) {
+    long r = __exyde_syscall(SYS_IPC_RECV_CAP, ch,
+                             (long)(uintptr_t)buf, max_len,
+                             (long)(uintptr_t)out_cap, 0);
+    return (int)chk(r);
+}
+
+int exyde_ipc_try_recv_cap(exyde_handle_t ch,
+                           void *buf, unsigned int max_len,
+                           exyde_handle_t *out_cap) {
+    long r = __exyde_syscall(SYS_IPC_TRY_RECV_CAP, ch,
+                             (long)(uintptr_t)buf, max_len,
+                             (long)(uintptr_t)out_cap, 0);
+    return (int)chk(r);
+}
+
 int exyde_handle_close(exyde_handle_t h) {
     long r = __exyde_syscall(SYS_HANDLE_CLOSE, h, 0, 0, 0, 0);
     return (int)chk(r);

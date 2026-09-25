@@ -42,6 +42,46 @@ int exyde_ipc_recv(exyde_handle_t h, void *buf, unsigned int max_len);
 int exyde_ipc_try_send(exyde_handle_t h, const void *buf, unsigned int len);
 int exyde_ipc_try_recv(exyde_handle_t h, void *buf, unsigned int max_len);
 
+/* ---- IPC with capability transfer (Phase 11.5.1) ---------------- */
+
+/* Action codes for exyde_ipc_send_cap.  Must match the kernel-side
+ * IPC_CAP_* values. */
+#define EXYDE_IPC_CAP_TRANSFER   1u   /* sender loses the handle        */
+#define EXYDE_IPC_CAP_DUPLICATE  2u   /* sender keeps the handle        */
+
+/* Send with an optional capability.
+ *
+ *   cap == EXYDE_HANDLE_INVALID -> plain send, `action` ignored.
+ *   cap valid                   -> action must be TRANSFER or DUPLICATE.
+ *
+ * The sender must hold EXYDE_RIGHT_TRANSFER on `cap`.  On TRANSFER
+ * the sender's handle is closed once the message is enqueued; on
+ * DUPLICATE it stays open.  Return 0 on success, -1 with errno set
+ * on failure (EPERM if the right is missing, EBADF if the handle is
+ * not open, EINVAL on a bad action). */
+int exyde_ipc_send_cap(exyde_handle_t ch,
+                       const void *buf, unsigned int len,
+                       exyde_handle_t cap, unsigned int action);
+
+/* Receive; writes the resulting handle (or EXYDE_HANDLE_INVALID if
+ * the message carried no capability) to *out_cap.
+ *
+ * IMPORTANT: a message that carries a capability must be consumed by
+ * one of these two functions.  Plain exyde_ipc_recv / try_recv
+ * refuse it with EINVAL and leave the message in the channel --
+ * capabilities are never silently dropped.
+ *
+ * Return the message size on success, -1 with errno set on failure
+ * (ENFILE if the receiver's handle table is full and the message
+ * carries a capability; the message stays in the channel). */
+int exyde_ipc_recv_cap(exyde_handle_t ch,
+                       void *buf, unsigned int max_len,
+                       exyde_handle_t *out_cap);
+
+int exyde_ipc_try_recv_cap(exyde_handle_t ch,
+                           void *buf, unsigned int max_len,
+                           exyde_handle_t *out_cap);
+
 int exyde_handle_close(exyde_handle_t h);
 
 /* Memory primitives ----------------------------------------------- */

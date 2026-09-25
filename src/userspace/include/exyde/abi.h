@@ -40,6 +40,11 @@
 #define SYS_UNMAP          18
 #define SYS_YIELD          19
 
+/* Phase 11.5.1: IPC with one capability per message. */
+#define SYS_IPC_SEND_CAP     20
+#define SYS_IPC_RECV_CAP     21
+#define SYS_IPC_TRY_RECV_CAP 22
+
 /* ---- transitional: VFS / fd / brk (remove in 11.5.6) ------------ */
 
 #define SYS_WRITE          1
@@ -49,7 +54,7 @@
 #define SYS_LSEEK          9
 #define SYS_BRK            11
 
-#define SYSCALL_MAX        20
+#define SYSCALL_MAX        23
 
 /* ---- errno values ----------------------------------------------- */
 /* Linux-compatible, so Phase 17 translation is trivial. */

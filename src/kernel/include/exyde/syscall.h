@@ -34,6 +34,15 @@
 #define SYS_UNMAP          18   /* (vaddr, npages)          -> 0           */
 #define SYS_YIELD          19   /* ()                       -> 0           */
 
+/* Phase 11.5.1: IPC with one capability per message.  action is
+ * 1 (TRANSFER -- sender loses the handle) or 2 (DUPLICATE --
+ * sender keeps it).  cap == HANDLE_INVALID means plain send.
+ * RECV_CAP always writes the resulting handle (or INVALID) to
+ * *out_cap_u. */
+#define SYS_IPC_SEND_CAP     20  /* (ch, buf, len, cap, act)  -> 0          */
+#define SYS_IPC_RECV_CAP     21  /* (ch, buf, max, out_cap)   -> msg_size   */
+#define SYS_IPC_TRY_RECV_CAP 22  /* (ch, buf, max, out_cap)   -> size/EAGAIN */
+
 /* ---- transitional: VFS / fd / brk (remove in 11.5.6) --------------- */
 
 #define SYS_WRITE          1
@@ -43,7 +52,7 @@
 #define SYS_LSEEK          9
 #define SYS_BRK            11
 
-#define SYSCALL_MAX        20
+#define SYSCALL_MAX        23
 
 /* Called from the arch syscall entry (ring 0, on the current thread's
  * kernel stack, IF enabled).  Returns a signed value: >=0 success,
