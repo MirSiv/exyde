@@ -19,6 +19,14 @@ int vfs_client_init(exyde_handle_t ch_req, exyde_handle_t ch_resp) {
     return 0;
 }
 
+static int ensure_init(void) {
+    if (rpc_req == EXYDE_HANDLE_INVALID || rpc_resp == EXYDE_HANDLE_INVALID) {
+        errno = ENOSYS;
+        return -1;
+    }
+    return 0;
+}
+
 static int rpc(const struct vfs_req *q, struct vfs_rsp *r_out) {
     static uint8_t tx[VFS_RPC_MSG_SIZE];
     static uint8_t rx[VFS_RPC_MSG_SIZE];
@@ -51,6 +59,8 @@ static void set_path(struct vfs_req *q, const char *path) {
 }
 
 int vfs_client_open(const char *path, uint32_t flags, uint32_t mode) {
+    if (ensure_init() != 0) return -1;
+
     struct vfs_req q; memset(&q, 0, sizeof q);
     q.op = VFS_OP_OPEN; q.arg0 = flags; q.arg1 = mode;
     set_path(&q, path);
@@ -60,12 +70,16 @@ int vfs_client_open(const char *path, uint32_t flags, uint32_t mode) {
 }
 
 int vfs_client_close(int fd) {
+    if (ensure_init() != 0) return -1;
+
     struct vfs_req q; memset(&q, 0, sizeof q);
     q.op = VFS_OP_CLOSE; q.fd = (uint32_t)fd;
     return rpc(&q, (struct vfs_rsp *)0);
 }
 
 long vfs_client_read(int fd, void *buf, size_t len) {
+    if (ensure_init() != 0) return -1;
+
     if (len == 0 || len > VFS_RPC_DATA_MAX) { errno = EINVAL; return -1; }
     struct vfs_req q; memset(&q, 0, sizeof q);
     q.op = VFS_OP_READ; q.fd = (uint32_t)fd; q.arg0 = len;
@@ -77,6 +91,8 @@ long vfs_client_read(int fd, void *buf, size_t len) {
 }
 
 long vfs_client_write(int fd, const void *buf, size_t len) {
+    if (ensure_init() != 0) return -1;
+
     if (len == 0 || len > VFS_RPC_DATA_MAX) { errno = EINVAL; return -1; }
     struct vfs_req q; memset(&q, 0, sizeof q);
     q.op = VFS_OP_WRITE; q.fd = (uint32_t)fd; q.data_len = (uint32_t)len;
@@ -87,6 +103,8 @@ long vfs_client_write(int fd, const void *buf, size_t len) {
 }
 
 long vfs_client_seek(int fd, long off, int whence) {
+    if (ensure_init() != 0) return -1;
+
     struct vfs_req q; memset(&q, 0, sizeof q);
     q.op = VFS_OP_SEEK; q.fd = (uint32_t)fd;
     q.arg0 = (uint64_t)off; q.arg1 = (uint64_t)whence;
@@ -96,24 +114,32 @@ long vfs_client_seek(int fd, long off, int whence) {
 }
 
 int vfs_client_mkdir(const char *path, uint32_t mode) {
+    if (ensure_init() != 0) return -1;
+
     struct vfs_req q; memset(&q, 0, sizeof q);
     q.op = VFS_OP_MKDIR; q.arg0 = mode; set_path(&q, path);
     return rpc(&q, (struct vfs_rsp *)0);
 }
 
 int vfs_client_unlink(const char *path) {
+    if (ensure_init() != 0) return -1;
+
     struct vfs_req q; memset(&q, 0, sizeof q);
     q.op = VFS_OP_UNLINK; set_path(&q, path);
     return rpc(&q, (struct vfs_rsp *)0);
 }
 
 int vfs_client_rmdir(const char *path) {
+    if (ensure_init() != 0) return -1;
+
     struct vfs_req q; memset(&q, 0, sizeof q);
     q.op = VFS_OP_RMDIR; set_path(&q, path);
     return rpc(&q, (struct vfs_rsp *)0);
 }
 
 int vfs_client_readdir(int fd, uint32_t index, char *name, size_t n) {
+    if (ensure_init() != 0) return -1;
+
     struct vfs_req q; memset(&q, 0, sizeof q);
     q.op = VFS_OP_READDIR; q.fd = (uint32_t)fd; q.arg0 = index;
     struct vfs_rsp r;
@@ -124,6 +150,8 @@ int vfs_client_readdir(int fd, uint32_t index, char *name, size_t n) {
 }
 
 int vfs_client_shutdown(void) {
+    if (ensure_init() != 0) return -1;
+
     struct vfs_req q; memset(&q, 0, sizeof q);
     q.op = VFS_OP_SHUTDOWN;
     return rpc(&q, (struct vfs_rsp *)0);
