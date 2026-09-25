@@ -21,9 +21,12 @@
  * Bigger requests are rejected with -EINVAL. */
 #define SYSCALL_IO_MAX  4096u
 
-/* Upper bounds for the microkernel IPC primitive.  Chosen for the
- * first implementation; can be raised later. */
-#define IPC_MSG_SIZE_MAX  256u
+/* Upper bounds for the microkernel IPC primitive.  Raised in
+ * Phase 11.5.3 so the VFS RPC protocol (struct vfs_req/rsp, up to
+ * 1024 bytes) fits in a single message.  1024 bytes sits comfortably
+ * on a 16 KiB kernel stack; if this grows further, switch the bounce
+ * buffer in sys_ipc_send/recv to a heap allocation. */
+#define IPC_MSG_SIZE_MAX  1024u
 #define IPC_CAPACITY_MAX  64u
 
 /* Capability action codes for SYS_IPC_SEND_CAP. */
