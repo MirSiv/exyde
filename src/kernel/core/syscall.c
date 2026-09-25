@@ -11,8 +11,8 @@
 #include <exyde/exec.h>
 #include <exyde/channel.h>
 #include <exyde/arch.h>
-#include <exyde/exec.h>
 #include <exyde/elf_table.h>
+#include <exyde/heap.h>
 #include <exyde/panic.h>
 
 /* One-shot kernel bounce buffer for SYS_KPUTS.
@@ -472,45 +472,23 @@ static sysret_t sys_yield(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
     return 0;
 }
 
-/* ---- process management (Phase 11.5.2) ----------------------------- */
+/* ---- process management (Phase 11.5.2, extended in 11.5.7) --------- */
 
-#define SPAWN_NAME_MAX  64
+#define SPAWN_NAME_MAX   64
+#define SPAWN_ELF_MAX    (4u * 1024u * 1024u)
 
-/* Spawn a process from the kernel's embedded ELF table.
- *
- *   name_u   : user VA of a NUL-terminated name ("init", "test", ...)
- *   argv_u   : user VA of argv array; may be 0 for "no arguments".
- *              (Arg passing from userspace arrives in 11.5.3; for now
- *              argv is built internally as { name, NULL }.)
- *   argc     : accepted for API symmetry; must be 0.
- *   cap_h    : handle in the caller's table that will be duplicated
- *              into the child's table and stored as its
- *              bootstrap_handle.  HANDLE_INVALID means "no bootstrap".
- *   flags    : must be 0 for now.
- *
- * Returns a fresh handle on the child process (HANDLE_KIND_PROCESS),
- * or -errno.  The handle holds a process reference; closing it or
- * exiting the parent releases the reference, destroying the child
- * once its own main thread has also exited.
- *
- * IRQs are disabled for the duration to prevent the timer from
- * scheduling the child before its handles are installed. */
-static sysret_t sys_spawn(u64 name_u, u64 argv_u, u64 argc,
-                          u64 cap_h, u64 flags) {
-    (void)argv_u;
+/* Common spawn path used by SYS_SPAWN (kernel ELF table) and
+ * SYS_SPAWN_ELF (ELF blob in a user buffer).  `name` is a NUL-terminated
+ * label already validated by the caller; `elf` points at a kernel
+ * buffer holding the whole ELF image.  process_spawn consumes the
+ * blob synchronously (elf_load copies every PT_LOAD segment before
+ * returning), so the caller may free the buffer as soon as this
+ * helper returns. */
+static sysret_t spawn_with_elf(const char *name,
+                               const void *elf, size_t elf_size,
+                               u64 cap_h) {
     process_t *parent = current_process();
     if (!parent) return SYSRET_ERR(EPERM);
-    if (flags != 0) return SYSRET_ERR(EINVAL);
-    if (argc != 0)  return SYSRET_ERR(EINVAL);
-
-    char name[SPAWN_NAME_MAX];
-    int sr = strncpy_from_user(parent->space, name, (vaddr_t)name_u,
-                               sizeof(name));
-    if (sr < 0) return SYSRET_ERR((u64)-sr);
-
-    const elf_entry_t *elf = elf_table_lookup(name);
-    if (!elf || !elf->blob_start || elf_entry_size(elf) == 0)
-        return SYSRET_ERR(ENOENT);
 
     /* Validate the bootstrap handle before touching anything heavy. */
     if (cap_h != (u64)HANDLE_INVALID) {
@@ -530,8 +508,7 @@ static sysret_t sys_spawn(u64 name_u, u64 argv_u, u64 argc,
     const char *argv[] = { name, (const char *)0 };
     const char *envp[] = { "PATH=/", (const char *)0 };
 
-    process_t *child = process_spawn(name, elf->blob_start,
-                                     (size_t)elf_entry_size(elf),
+    process_t *child = process_spawn(name, elf, elf_size,
                                      1, argv, 1, envp);
     if (!child) {
         arch_irqs_restore(irq);
@@ -541,7 +518,6 @@ static sysret_t sys_spawn(u64 name_u, u64 argv_u, u64 argc,
     /* Duplicate the caller's bootstrap handle into the child. */
     if (cap_h != (u64)HANDLE_INVALID) {
         void *obj = (void *)0; u32 kind = 0, rights = 0;
-        /* lookup_full for rights */
         if (!handle_lookup_full(&parent->handles, (handle_t)cap_h,
                                 HANDLE_RIGHT_TRANSFER, &obj, &kind, &rights)) {
             /* Should not happen: we validated above. */
@@ -578,6 +554,61 @@ static sysret_t sys_spawn(u64 name_u, u64 argv_u, u64 argc,
     return (sysret_t)ph;
 }
 
+/* Spawn a process from the kernel's embedded ELF table. */
+static sysret_t sys_spawn(u64 name_u, u64 argv_u, u64 argc,
+                          u64 cap_h, u64 flags) {
+    (void)argv_u;
+    process_t *parent = current_process();
+    if (!parent) return SYSRET_ERR(EPERM);
+    if (flags != 0) return SYSRET_ERR(EINVAL);
+    if (argc != 0)  return SYSRET_ERR(EINVAL);
+
+    char name[SPAWN_NAME_MAX];
+    int sr = strncpy_from_user(parent->space, name, (vaddr_t)name_u,
+                               sizeof(name));
+    if (sr < 0) return SYSRET_ERR((u64)-sr);
+
+    const elf_entry_t *elf = elf_table_lookup(name);
+    if (!elf || !elf->blob_start || elf_entry_size(elf) == 0)
+        return SYSRET_ERR(ENOENT);
+
+    return spawn_with_elf(name, elf->blob_start,
+                          (size_t)elf_entry_size(elf), cap_h);
+}
+
+/* SYS_SPAWN_ELF: spawn from an ELF image held in a user buffer.
+ * This is the foundation for Phase 11.5.8: init will read each
+ * program under bin/ from the VFS and hand its bytes to the kernel
+ * here, instead of the kernel carrying an embedded ELF table. */
+static sysret_t sys_spawn_elf(u64 elf_u, u64 elf_size, u64 name_u,
+                              u64 cap_h, u64 flags) {
+    process_t *parent = current_process();
+    if (!parent) return SYSRET_ERR(EPERM);
+    if (flags != 0) return SYSRET_ERR(EINVAL);
+    if (elf_size == 0 || elf_size > SPAWN_ELF_MAX) return SYSRET_ERR(EINVAL);
+
+    char name[SPAWN_NAME_MAX];
+    int sr = strncpy_from_user(parent->space, name, (vaddr_t)name_u,
+                               sizeof(name));
+    if (sr < 0) return SYSRET_ERR((u64)-sr);
+
+    /* Kernel bounce buffer: process_spawn -> elf_load consumes the
+     * whole blob before returning, so a single contiguous allocation
+     * is all we need.  4 MiB upper bound keeps this in the heap. */
+    u8 *kbuf = (u8 *)exy_malloc((size_t)elf_size);
+    if (!kbuf) return SYSRET_ERR(ENOMEM);
+
+    if (copy_from_user(parent->space, kbuf, (vaddr_t)elf_u,
+                       (size_t)elf_size) < 0) {
+        exy_free(kbuf);
+        return SYSRET_ERR(EFAULT);
+    }
+
+    sysret_t r = spawn_with_elf(name, kbuf, (size_t)elf_size, cap_h);
+    exy_free(kbuf);
+    return r;
+}
+
 /* Block until the child whose handle is proc_h has called SYS_EXIT.
  * Returns its exit code (i32, may be negative).  Closing the handle
  * later drops the process's last reference. */
@@ -605,8 +636,8 @@ static sysret_t sys_wait(u64 proc_h, u64 a1, u64 a2, u64 a3, u64 a4) {
     return (sysret_t)(i64)code;
 }
 
-/* Return the bootstrap handle that the parent passed to SYS_SPAWN,
- * or -ENOENT if none was provided. */
+/* Return the bootstrap handle that the parent passed to SYS_SPAWN or
+ * SYS_SPAWN_ELF, or -ENOENT if none was provided. */
 static sysret_t sys_get_bootstrap(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
     (void)a0; (void)a1; (void)a2; (void)a3; (void)a4;
     process_t *p = current_process();
@@ -658,13 +689,13 @@ static const syscall_fn_t syscall_table[SYSCALL_MAX] = {
     [SYS_IPC_RECV_CAP]  = sys_ipc_recv_cap,
     [SYS_IPC_TRY_RECV_CAP] = sys_ipc_try_recv_cap,
     [SYS_SPAWN]            = sys_spawn,
+    [SYS_SPAWN_ELF]        = sys_spawn_elf,
     [SYS_WAIT]             = sys_wait,
     [SYS_GET_BOOTSTRAP]    = sys_get_bootstrap,
     [SYS_MAP]           = sys_map,
     [SYS_UNMAP]         = sys_unmap,
     [SYS_YIELD]         = sys_yield,
 
-    /* Transitional, remove in 11.5.6 */
     [SYS_KPUTS]         = sys_kputs,
 };
 

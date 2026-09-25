@@ -10,6 +10,7 @@ OUT_CONS := $(ROOT_DIR)/build/console.elf
 CC       := gcc
 AS       := nasm
 LD       := ld
+OBJCOPY  := objcopy
 GCC_INC  := $(shell $(CC) -print-file-name=include)
 
 CFLAGS := \
@@ -51,8 +52,14 @@ INIT_OBJ  := $(BUILD)/init/init.o
 TEST_OBJ  := $(BUILD)/test/test.o
 ECHO_OBJ  := $(BUILD)/echo/echo.o
 VFS_OBJS  := $(BUILD)/vfs/main.o $(BUILD)/vfs/vfs.o \
-             $(BUILD)/vfs/ramfs.o $(BUILD)/vfs/fd_table.o
+	     $(BUILD)/vfs/ramfs.o $(BUILD)/vfs/fd_table.o
 CONS_OBJS := $(BUILD)/console/main.o
+
+# Phase 11.5.7: build/echo.elf is embedded into init.elf so init can
+# exercise exyde_spawn_elf() with a real ELF image without a
+# filesystem.  objcopy mangles the path into the standard
+# _binary_build_echo_elf_{start,end} symbols; see init/init.c.
+INIT_ECHO_BLOB := $(BUILD)/init/embedded_echo.o
 
 .PHONY: all clean
 
@@ -66,9 +73,14 @@ $(BUILD)/%.o: %.asm
 	@mkdir -p $(@D)
 	$(AS) $(ASFLAGS) $< -o $@
 
-$(OUT_INIT): $(CRT_OBJ) $(LIBC_OBJS) $(INIT_OBJ) $(USER_DIR)/linker/exyde.ld
+$(INIT_ECHO_BLOB): $(OUT_ECHO)
 	@mkdir -p $(@D)
-	$(LD) $(LDFLAGS) -o $@ $(CRT_OBJ) $(LIBC_OBJS) $(INIT_OBJ)
+	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    build/echo.elf build/user/init/embedded_echo.o
+
+$(OUT_INIT): $(CRT_OBJ) $(LIBC_OBJS) $(INIT_OBJ) $(INIT_ECHO_BLOB) $(USER_DIR)/linker/exyde.ld
+	@mkdir -p $(@D)
+	$(LD) $(LDFLAGS) -o $@ $(CRT_OBJ) $(LIBC_OBJS) $(INIT_OBJ) $(INIT_ECHO_BLOB)
 
 $(OUT_TEST): $(CRT_OBJ) $(LIBC_OBJS) $(TEST_OBJ) $(USER_DIR)/linker/exyde.ld
 	@mkdir -p $(@D)

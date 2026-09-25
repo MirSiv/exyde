@@ -98,14 +98,26 @@ int exyde_handle_close(exyde_handle_t h);
  * parent's reference to the child. */
 exyde_handle_t exyde_spawn(const char *name, exyde_handle_t cap);
 
+/* Phase 11.5.7: spawn from an ELF image held in the caller's address
+ * space.  `elf` points at the first byte of a complete ELF64 static
+ * executable, `size` is its length in bytes (1 <= size <= 4 MiB).
+ * `name` is a short label used only as the process name and argv[0];
+ * it does not need to exist in the kernel's embedded elf_table.
+ *
+ * Semantics are otherwise identical to exyde_spawn(). */
+exyde_handle_t exyde_spawn_elf(const void *elf, size_t size,
+                               const char *name, exyde_handle_t cap);
+
 /* Block until the child whose process handle is `proc` exits.
  * Returns the child's exit code (>= 0) or -1 with errno set.
- * Must be called with a handle obtained from exyde_spawn. */
+ * Must be called with a handle obtained from exyde_spawn or
+ * exyde_spawn_elf. */
 int exyde_wait(exyde_handle_t proc);
 
-/* Inside a child spawned by exyde_spawn, return the bootstrap handle
- * that the parent passed at spawn time.  Returns EXYDE_HANDLE_INVALID
- * with errno = ENOENT if no bootstrap was supplied. */
+/* Inside a child spawned by exyde_spawn / exyde_spawn_elf, return the
+ * bootstrap handle that the parent passed at spawn time.  Returns
+ * EXYDE_HANDLE_INVALID with errno = ENOENT if no bootstrap was
+ * supplied. */
 exyde_handle_t exyde_get_bootstrap(void);
 
 /* Memory primitives ----------------------------------------------- */

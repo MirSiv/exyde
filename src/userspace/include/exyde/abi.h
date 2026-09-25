@@ -47,6 +47,9 @@
 #define SYS_WAIT             24
 #define SYS_GET_BOOTSTRAP    25
 
+/* Phase 11.5.7: spawn from an ELF image in a user buffer. */
+#define SYS_SPAWN_ELF        26
+
 /* Kernel console write, no fd, no VFS.  Permanent low-level debug
  * primitive; the number 1 used to be the transitional fd-based
  * SYS_WRITE. */
@@ -56,7 +59,7 @@
  * They are retired; the numbers remain reserved and must not be
  * reused. */
 
-#define SYSCALL_MAX        26
+#define SYSCALL_MAX        27
 
 /* ---- errno values ----------------------------------------------- */
 /* Linux-compatible, so Phase 17 translation is trivial. */

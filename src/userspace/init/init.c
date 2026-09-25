@@ -3,13 +3,16 @@
  * Phase 11.5.2.  Runs as the first user process (spawned by the
  * kernel bootstrap path in kmain.c::userspace_selftest).  Its job:
  *
- *   1. Spawn "test" -- the Phase 11 regression suite -- with a
- *      bootstrap channel, wait for it, and abort with a non-zero
- *      exit code if it failed.
+ *   1. Start the console server, then spawn "test" -- the Phase 11
+ *      regression suite -- with a bootstrap channel, wait for it, and
+ *      abort with a non-zero exit code if it failed.
  *   2. Spawn "echo" -- the first real service -- with another
  *      bootstrap channel, exercise an IPC round-trip, ask it to
  *      quit, and wait for it.
- *   3. Exit 0.
+ *   3. Spawn "exy-vfs" and exercise the POSIX layer over libvfs.
+ *   4. Phase 11.5.7: exercise exyde_spawn_elf() by spawning an
+ *      embedded copy of echo.elf straight from init's address space.
+ *   5. Exit 0.
  *
  * This is deliberately thin.  Everything that was init's test suite
  * moved to test.elf. */
@@ -25,6 +28,12 @@
 #include <exyde/vfs_client.h>
 #include <exyde/vfs_rpc.h>
 #include <stdint.h>
+
+/* Embedded by the userspace Makefile via objcopy: build/echo.elf is
+ * linked into init.elf under the standard path-mangled names.  See
+ * src/userspace/Makefile (INIT_ECHO_BLOB). */
+extern const unsigned char _binary_build_echo_elf_start[];
+extern const unsigned char _binary_build_echo_elf_end[];
 
 static exyde_handle_t g_console_child = EXYDE_HANDLE_INVALID;
 
@@ -292,6 +301,68 @@ fail:
     exyde_handle_close(child);
     return 1;
 }
+
+/* Phase 11.5.7: exercise SYS_SPAWN_ELF with an in-memory ELF image.
+ * The image is the same echo.elf the kernel's embedded elf_table
+ * already exposes; here init hands it back to the kernel from its
+ * own address space instead.  This proves the read-ELF-from-user
+ * path works end to end. */
+static int run_spawn_elf_test(void) {
+    exyde_handle_t ch = exyde_ipc_create(16, 2);
+    if (ch == EXYDE_HANDLE_INVALID) {
+        printf("init: FAIL spawn_elf channel errno=%d\n", errno);
+        return 1;
+    }
+
+    size_t sz = (size_t)(_binary_build_echo_elf_end -
+                         _binary_build_echo_elf_start);
+    exyde_handle_t child = exyde_spawn_elf(_binary_build_echo_elf_start,
+                                           sz, "echo2", ch);
+    if (child == EXYDE_HANDLE_INVALID) {
+        printf("init: FAIL spawn_elf errno=%d size=%lu\n",
+               errno, (unsigned long)sz);
+        exyde_handle_close(ch);
+        return 1;
+    }
+
+    char tx[16] = "ping";
+    char rx[16];
+    if (exyde_ipc_send(ch, tx, 16) != 0) {
+        printf("init: FAIL spawn_elf send errno=%d\n", errno);
+        goto fail;
+    }
+    if (exyde_ipc_recv(ch, rx, 16) != 16) {
+        printf("init: FAIL spawn_elf recv errno=%d\n", errno);
+        goto fail;
+    }
+    if (strcmp(rx, "ping") != 0) {
+        printf("init: FAIL spawn_elf mismatch [%s]\n", rx);
+        goto fail;
+    }
+
+    char q[16] = "quit";
+    if (exyde_ipc_send(ch, q, 16) != 0) {
+        printf("init: FAIL spawn_elf quit send errno=%d\n", errno);
+        goto fail;
+    }
+
+    int code = exyde_wait(child);
+    exyde_handle_close(ch);
+    exyde_handle_close(child);
+
+    if (code != 0) {
+        printf("init: FAIL spawn_elf exit code %d\n", code);
+        return 1;
+    }
+    printf("init: spawn_elf OK\n");
+    return 0;
+
+fail:
+    exyde_handle_close(ch);
+    exyde_handle_close(child);
+    return 1;
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
@@ -301,6 +372,7 @@ int main(int argc, char **argv, char **envp) {
     if (run_regression_suite() != 0) return 1;
     if (run_echo_service()     != 0) return 1;
     if (run_vfs_test()         != 0) return 1;
+    if (run_spawn_elf_test()   != 0) return 1;
 
     printf("init: all services OK\n");
 

@@ -45,6 +45,14 @@
 #define SYS_WAIT             24  /* (proc_handle)                  -> exit_code */
 #define SYS_GET_BOOTSTRAP    25  /* ()                             -> handle  */
 
+/* Phase 11.5.7: spawn from an ELF image supplied by userspace instead
+ * of from the kernel's embedded elf_table.  This is the foundation
+ * for 11.5.8 (initrd: /bin loaded by init from VFS and handed to
+ * the kernel here).  `elf_u` is a user VA holding the whole file;
+ * `name_u` is a user VA holding a NUL-terminated label (only used as
+ * the process name and argv[0]). */
+#define SYS_SPAWN_ELF        26  /* (elf_u, elf_size, name_u, cap, flags) -> handle */
+
 /* Kernel console write, no fd, no VFS.  Used by userspace before a
  * console server is reachable (bootstrap diagnostics) and as a
  * permanent low-level debug primitive.  Number 1 previously carried
@@ -56,7 +64,7 @@
  * They are retired; the numbers remain reserved and must not be
  * reused. */
 
-#define SYSCALL_MAX        26
+#define SYSCALL_MAX        27
 
 /* Called from the arch syscall entry (ring 0, on the current thread's
  * kernel stack, IF enabled).  Returns a signed value: >=0 success,
