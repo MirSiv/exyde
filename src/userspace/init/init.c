@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <errno.h>
 
-/* init for Phase 11.2.3. */
+/* init for Phase 11.3.0 (snprintf/sprintf). */
 
 static int cmp_int(const void *a, const void *b) {
     int x = *(const int *)a;
@@ -102,6 +102,38 @@ int main(int argc, char **argv, char **envp) {
     perror("init: perror-test");
     errno = 0;
     perror("init: perror-empty");
+
+    /* --- snprintf / sprintf regression --- */
+    {
+        char sb[64];
+        int n = snprintf(sb, sizeof(sb), "%d/%s/%04x", 42, "abc", 0xbeef);
+        printf("init: snprintf [%s] [%d]\n", sb, n);
+    }
+    {
+        /* Truncation: 14 chars wanted, buffer 8 -> 7 chars + NUL.
+         * Return value must still be the un-truncated length (14). */
+        char tb[8];
+        int tn = snprintf(tb, sizeof(tb), "abcdefghijklmn");
+        printf("init: snprintf trunc [%s] [%d]\n", tb, tn);
+    }
+    {
+        /* n=1: only the NUL is written, full length returned. */
+        char ob[1];
+        int on = snprintf(ob, sizeof(ob), "xyz");
+        printf("init: snprintf n=1 [%d] [%d]\n",
+               (int)(unsigned char)ob[0], on);
+    }
+    {
+        /* n=0 + NULL: format is measured but not written anywhere. */
+        int zn = snprintf(NULL, 0, "%d-%d-%d", 1, 22, 333);
+        printf("init: snprintf n=0 [%d]\n", zn);
+    }
+    {
+        /* sprintf shares the formatting core. */
+        char sp[64];
+        int sn = sprintf(sp, "x=%d y=%s", -7, "ok");
+        printf("init: sprintf [%s] [%d]\n", sp, sn);
+    }
 
     /* --- allocator regression --- */
     char *a = (char *)malloc(64);

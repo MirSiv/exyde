@@ -6,9 +6,12 @@
 #include <errno.h>
 #include <string.h>
 
-/* write(1)-backed stdio.  Phase 11.2.0: printf understands flags,
- * width, precision, and the hh/h/l/ll/z/t/j length modifiers.
- * Conversions: %d %i %u %o %x %X %c %s %p %%.
+/* write(1)-backed stdio.
+ *
+ * Phase 11.3.0: the formatter was extracted into format_core(), which
+ * writes characters through a tiny `struct out` sink.  printf/vprintf
+ * use an fd sink (one byte per write(2), no buffering).  snprintf/
+ * vsnprintf/sprintf/vsprintf use a bounded buffer sink.
  *
  * Still missing (deliberately):
  *   - floating point (%f %e %g): needs a soft-float formatter, and
@@ -31,7 +34,59 @@ int puts(const char *s) {
     return 0;
 }
 
-/* --- helpers -------------------------------------------------------- */
+/* --- output sinks ---------------------------------------------------- */
+
+/* A formatting session writes characters through `put`.  `count` tracks
+ * every character the formatter *intended* to emit (that is the value
+ * snprintf must return); `error` records a sink failure. */
+struct out {
+    int (*put)(void *ctx, int c);
+    void *ctx;
+    int count;
+    int error;
+};
+
+static int out_char(struct out *o, int c) {
+    if (o->error) return -1;
+    if (o->put(o->ctx, c) < 0) {
+        o->error = 1;
+        return -1;
+    }
+    ++o->count;
+    return 0;
+}
+
+static int out_repeat(struct out *o, int c, int n) {
+    for (int i = 0; i < n; ++i) {
+        if (out_char(o, c) < 0) return -1;
+    }
+    return 0;
+}
+
+/* fd sink: one byte per write(2), matching the pre-11.3.0 printf. */
+static int fd_sink_put(void *ctx, int c) {
+    int fd = *(int *)ctx;
+    char b = (char)c;
+    return (write(fd, &b, 1) == 1) ? 0 : -1;
+}
+
+/* Buffer sink: writes at most cap-1 bytes, then the caller NUL-
+ * terminates.  pos always advances, so the caller can compute the
+ * "would-have-written" count even after truncation. */
+struct buf_sink {
+    char  *buf;
+    size_t cap;
+    size_t pos;
+};
+
+static int buf_sink_put(void *ctx, int c) {
+    struct buf_sink *bs = ctx;
+    if (bs->pos + 1 < bs->cap) bs->buf[bs->pos] = (char)c;
+    ++bs->pos;
+    return 0;
+}
+
+/* --- integer-to-digits ---------------------------------------------- */
 
 /* Unsigned integer -> digits, most-significant first.  Returns count. */
 static int u64_to_base(unsigned long long v, unsigned base, int upper,
@@ -51,20 +106,7 @@ static int u64_to_base(unsigned long long v, unsigned base, int upper,
     return n;
 }
 
-static int emit_byte(int c, int *count) {
-    if (putchar(c) == EOF) return -1;
-    ++*count;
-    return 0;
-}
-
-static int emit_repeat(int c, int n, int *count) {
-    for (int i = 0; i < n; ++i) {
-        if (emit_byte(c, count) < 0) return -1;
-    }
-    return 0;
-}
-
-/* --- flags / length codes ------------------------------------------ */
+/* --- flags / length codes ------------------------------------------- */
 
 #define F_LEFT   (1u << 0)
 #define F_ZERO   (1u << 1)
@@ -81,34 +123,15 @@ static int emit_repeat(int c, int n, int *count) {
 #define L_T    6
 #define L_J    7
 
-/* --- printf --------------------------------------------------------- */
+/* --- formatting core ------------------------------------------------- */
 
-/* Print "<s>: <strerror(errno)>" to stderr, followed by '\n'.
- * If `s` is NULL or empty, only the message is printed.  errno is
- * captured on entry and not modified. */
-void perror(const char *s) {
-    int saved = errno;
-    const char *msg = strerror(saved);
-
-    if (s && *s) {
-        size_t n = strlen(s);
-        if (write(STDERR_FILENO, s, n) != (ssize_t)n) return;
-        if (write(STDERR_FILENO, ": ", 2) != 2) return;
-    }
-    size_t m = strlen(msg);
-    if (write(STDERR_FILENO, msg, m) != (ssize_t)m) return;
-    (void)write(STDERR_FILENO, "\n", 1);
-}
-
-int printf(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-
-    int n = 0;
-
+/* Consumes `ap`.  Never returns an error itself -- failures are
+ * recorded in o->error.  For an fd sink that means a write failure; for
+ * a buffer sink, overflow is silent and only `count` grows. */
+static void format_core(struct out *o, const char *fmt, va_list ap) {
     for (const char *p = fmt; *p; ) {
         if (*p != '%') {
-            if (emit_byte((unsigned char)*p++, &n) < 0) goto fail;
+            if (out_char(o, (unsigned char)*p++) < 0) return;
             continue;
         }
         ++p;
@@ -174,7 +197,7 @@ int printf(const char *fmt, ...) {
 
         /* --- %%, %c, %s: handled directly, no numeric buffer ---------- */
         if (conv == '%') {
-            if (emit_byte('%', &n) < 0) goto fail;
+            if (out_char(o, '%') < 0) return;
             continue;
         }
 
@@ -182,11 +205,11 @@ int printf(const char *fmt, ...) {
             int c = va_arg(ap, int);
             int pad = (width > 1) ? width - 1 : 0;
             if (flags & F_LEFT) {
-                if (emit_byte(c, &n) < 0) goto fail;
-                if (emit_repeat(' ', pad, &n) < 0) goto fail;
+                if (out_char(o, c) < 0) return;
+                if (out_repeat(o, ' ', pad) < 0) return;
             } else {
-                if (emit_repeat(' ', pad, &n) < 0) goto fail;
-                if (emit_byte(c, &n) < 0) goto fail;
+                if (out_repeat(o, ' ', pad) < 0) return;
+                if (out_char(o, c) < 0) return;
             }
             continue;
         }
@@ -200,12 +223,12 @@ int printf(const char *fmt, ...) {
             int pad = (width > slen) ? width - slen : 0;
             if (flags & F_LEFT) {
                 for (int i = 0; i < slen; ++i)
-                    if (emit_byte((unsigned char)s[i], &n) < 0) goto fail;
-                if (emit_repeat(' ', pad, &n) < 0) goto fail;
+                    if (out_char(o, (unsigned char)s[i]) < 0) return;
+                if (out_repeat(o, ' ', pad) < 0) return;
             } else {
-                if (emit_repeat(' ', pad, &n) < 0) goto fail;
+                if (out_repeat(o, ' ', pad) < 0) return;
                 for (int i = 0; i < slen; ++i)
-                    if (emit_byte((unsigned char)s[i], &n) < 0) goto fail;
+                    if (out_char(o, (unsigned char)s[i]) < 0) return;
             }
             continue;
         }
@@ -311,25 +334,87 @@ int printf(const char *fmt, ...) {
         int pad = (width > blen) ? width - blen : 0;
         if (flags & F_LEFT) {
             for (int i = 0; i < blen; ++i)
-                if (emit_byte((unsigned char)body[i], &n) < 0) goto fail;
-            if (emit_repeat(' ', pad, &n) < 0) goto fail;
+                if (out_char(o, (unsigned char)body[i]) < 0) return;
+            if (out_repeat(o, ' ', pad) < 0) return;
         } else if ((flags & F_ZERO) && zero_ok) {
             for (int i = 0; i < headlen; ++i)
-                if (emit_byte((unsigned char)body[i], &n) < 0) goto fail;
-            if (emit_repeat('0', pad, &n) < 0) goto fail;
+                if (out_char(o, (unsigned char)body[i]) < 0) return;
+            if (out_repeat(o, '0', pad) < 0) return;
             for (int i = headlen; i < blen; ++i)
-                if (emit_byte((unsigned char)body[i], &n) < 0) goto fail;
+                if (out_char(o, (unsigned char)body[i]) < 0) return;
         } else {
-            if (emit_repeat(' ', pad, &n) < 0) goto fail;
+            if (out_repeat(o, ' ', pad) < 0) return;
             for (int i = 0; i < blen; ++i)
-                if (emit_byte((unsigned char)body[i], &n) < 0) goto fail;
+                if (out_char(o, (unsigned char)body[i]) < 0) return;
         }
     }
+}
 
-    va_end(ap);
-    return n;
+/* --- public API ------------------------------------------------------ */
 
-fail:
+int vprintf(const char *fmt, va_list ap) {
+    int fd = STDOUT_FILENO;
+    struct out o = { fd_sink_put, &fd, 0, 0 };
+    format_core(&o, fmt, ap);
+    return o.error ? -1 : o.count;
+}
+
+int printf(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vprintf(fmt, ap);
     va_end(ap);
-    return -1;
+    return r;
+}
+
+int vsnprintf(char *buf, size_t n, const char *fmt, va_list ap) {
+    struct buf_sink bs = { buf, n, 0 };
+    struct out o = { buf_sink_put, &bs, 0, 0 };
+    format_core(&o, fmt, ap);
+
+    /* NUL-terminate at min(pos, n-1) when the caller gave us room. */
+    if (n > 0) {
+        size_t t = (bs.pos < n) ? bs.pos : (n - 1);
+        buf[t] = 0;
+    }
+    return o.count;
+}
+
+int snprintf(char *buf, size_t n, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(buf, n, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+int vsprintf(char *buf, const char *fmt, va_list ap) {
+    return vsnprintf(buf, (size_t)-1, fmt, ap);
+}
+
+int sprintf(char *buf, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsprintf(buf, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+/* --- perror ---------------------------------------------------------- */
+
+/* Print "<s>: <strerror(errno)>" to stderr, followed by '\n'.
+ * If `s` is NULL or empty, only the message is printed.  errno is
+ * captured on entry and not modified. */
+void perror(const char *s) {
+    int saved = errno;
+    const char *msg = strerror(saved);
+
+    if (s && *s) {
+        size_t n = strlen(s);
+        if (write(STDERR_FILENO, s, n) != (ssize_t)n) return;
+        if (write(STDERR_FILENO, ": ", 2) != 2) return;
+    }
+    size_t m = strlen(msg);
+    if (write(STDERR_FILENO, msg, m) != (ssize_t)m) return;
+    (void)write(STDERR_FILENO, "\n", 1);
 }
