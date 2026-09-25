@@ -11,12 +11,15 @@ extern const u8 _binary_build_echo_elf_start[];
 extern const u8 _binary_build_echo_elf_end[];
 extern const u8 _binary_build_exy_vfs_elf_start[];
 extern const u8 _binary_build_exy_vfs_elf_end[];
+extern const u8 _binary_build_console_elf_start[];
+extern const u8 _binary_build_console_elf_end[];
 
 static const elf_entry_t table[] = {
     { "init", _binary_build_init_elf_start, _binary_build_init_elf_end },
     { "test", _binary_build_test_elf_start, _binary_build_test_elf_end },
     { "echo", _binary_build_echo_elf_start, _binary_build_echo_elf_end },
     { "exy-vfs", _binary_build_exy_vfs_elf_start, _binary_build_exy_vfs_elf_end },
+    { "console", _binary_build_console_elf_start, _binary_build_console_elf_end },
 };
 
 #define ELF_TABLE_N ((u32)(sizeof(table) / sizeof(table[0])))

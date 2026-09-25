@@ -2,7 +2,10 @@
 #include <errno.h>
 #include <stdint.h>
 #include <exyde/abi.h>
+#include <exyde/vfs_client.h>
+#include <exyde/console_client.h>
 #include "internal/syscall.h"
+#include "internal/vfs_fdtab.h"
 
 static long posix_ret(long r) {
     if (r < 0 && r > -4096) {
@@ -12,29 +15,68 @@ static long posix_ret(long r) {
     return r;
 }
 
+/* fd 0/1/2 route to the kernel console via the transitional
+ * SYS_READ / SYS_WRITE.  fd >= 3 route through libvfs to exy-vfs,
+ * using the local fd table to translate local fd -> server fd.
+ *
+ * open() always goes through libvfs; there is no longer a POSIX
+ * open that touches the kernel VFS.  A caller that has not called
+ * vfs_client_init() gets ENOSYS from libvfs. */
+
 ssize_t read(int fd, void *buf, size_t count) {
-    long r = __exyde_syscall(SYS_READ, fd, (long)buf, (long)count, 0, 0);
-    return (ssize_t)posix_ret(r);
+    if (fd >= 0 && fd < 3) {
+        if (console_client_ready()) {
+            if (fd == STDIN_FILENO) return console_client_read(buf, count);
+            /* stdout/stderr are write-only; fall through to kernel
+             * which will return the appropriate error. */
+        }
+        long r = __exyde_syscall(SYS_READ, fd, (long)buf, (long)count, 0, 0);
+        return (ssize_t)posix_ret(r);
+    }
+    uint32_t sf;
+    if (vfs_fdtab_get(fd, &sf) != 0) return -1;
+    return vfs_client_read((int)sf, buf, count);
 }
 
 ssize_t write(int fd, const void *buf, size_t count) {
-    long r = __exyde_syscall(SYS_WRITE, fd, (long)buf, (long)count, 0, 0);
-    return (ssize_t)posix_ret(r);
+    if (fd >= 0 && fd < 3) {
+        if (console_client_ready() &&
+            (fd == STDOUT_FILENO || fd == STDERR_FILENO)) {
+            return console_client_write(buf, count);
+        }
+        long r = __exyde_syscall(SYS_WRITE, fd, (long)buf, (long)count, 0, 0);
+        return (ssize_t)posix_ret(r);
+    }
+    uint32_t sf;
+    if (vfs_fdtab_get(fd, &sf) != 0) return -1;
+    return vfs_client_write((int)sf, buf, count);
 }
 
 int open(const char *path, int flags, ...) {
-    long r = __exyde_syscall(SYS_OPEN, (long)path, flags, 0, 0, 0);
-    return (int)posix_ret(r);
+    int sf = vfs_client_open(path, (uint32_t)flags, 0);
+    if (sf < 0) return -1;
+    return vfs_fdtab_alloc((uint32_t)sf);
 }
 
 int close(int fd) {
-    long r = __exyde_syscall(SYS_CLOSE, fd, 0, 0, 0, 0);
-    return (int)posix_ret(r);
+    if (fd >= 0 && fd < 3) {
+        long r = __exyde_syscall(SYS_CLOSE, fd, 0, 0, 0, 0);
+        return (int)posix_ret(r);
+    }
+    uint32_t sf;
+    if (vfs_fdtab_get(fd, &sf) != 0) return -1;
+    if (vfs_client_close((int)sf) != 0) return -1;
+    return vfs_fdtab_free(fd);
 }
 
 off_t lseek(int fd, off_t offset, int whence) {
-    long r = __exyde_syscall(SYS_LSEEK, fd, offset, whence, 0, 0);
-    return (off_t)posix_ret(r);
+    if (fd >= 0 && fd < 3) {
+        long r = __exyde_syscall(SYS_LSEEK, fd, offset, whence, 0, 0);
+        return (off_t)posix_ret(r);
+    }
+    uint32_t sf;
+    if (vfs_fdtab_get(fd, &sf) != 0) return -1;
+    return vfs_client_seek((int)sf, offset, whence);
 }
 
 pid_t getpid(void) {

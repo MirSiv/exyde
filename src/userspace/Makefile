@@ -5,6 +5,7 @@ OUT_INIT := $(ROOT_DIR)/build/init.elf
 OUT_TEST := $(ROOT_DIR)/build/test.elf
 OUT_ECHO := $(ROOT_DIR)/build/echo.elf
 OUT_VFS  := $(ROOT_DIR)/build/exy-vfs.elf
+OUT_CONS := $(ROOT_DIR)/build/console.elf
 
 CC       := gcc
 AS       := nasm
@@ -39,7 +40,9 @@ LIBC_SRCS := \
     libc/unistd.c \
     libc/stdio.c \
     libc/micro.c \
-    libc/vfs_client.c
+    libc/vfs_client.c \
+    libc/vfs_fdtab.c \
+    libc/console_client.c
 
 LIBC_OBJS := $(patsubst %.c,$(BUILD)/%.o,$(LIBC_SRCS))
 CRT_OBJ   := $(BUILD)/crt/crt0.o
@@ -49,10 +52,11 @@ TEST_OBJ  := $(BUILD)/test/test.o
 ECHO_OBJ  := $(BUILD)/echo/echo.o
 VFS_OBJS  := $(BUILD)/vfs/main.o $(BUILD)/vfs/vfs.o \
              $(BUILD)/vfs/ramfs.o $(BUILD)/vfs/fd_table.o
+CONS_OBJS := $(BUILD)/console/main.o
 
 .PHONY: all clean
 
-all: $(OUT_INIT) $(OUT_TEST) $(OUT_ECHO) $(OUT_VFS)
+all: $(OUT_INIT) $(OUT_TEST) $(OUT_ECHO) $(OUT_VFS) $(OUT_CONS)
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(@D)
@@ -78,5 +82,9 @@ $(OUT_VFS): $(CRT_OBJ) $(LIBC_OBJS) $(VFS_OBJS) $(USER_DIR)/linker/exyde.ld
 	@mkdir -p $(@D)
 	$(LD) $(LDFLAGS) -o $@ $(CRT_OBJ) $(LIBC_OBJS) $(VFS_OBJS)
 
+$(OUT_CONS): $(CRT_OBJ) $(LIBC_OBJS) $(CONS_OBJS) $(USER_DIR)/linker/exyde.ld
+	@mkdir -p $(@D)
+	$(LD) $(LDFLAGS) -o $@ $(CRT_OBJ) $(LIBC_OBJS) $(CONS_OBJS)
+
 clean:
-	rm -rf $(BUILD) $(OUT_INIT) $(OUT_TEST) $(OUT_ECHO) $(OUT_VFS)
+	rm -rf $(BUILD) $(OUT_INIT) $(OUT_TEST) $(OUT_ECHO) $(OUT_VFS) $(OUT_CONS)

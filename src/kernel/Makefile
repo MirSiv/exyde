@@ -9,10 +9,12 @@ INIT_ELF   := $(BUILD)/init.elf
 TEST_ELF   := $(BUILD)/test.elf
 ECHO_ELF   := $(BUILD)/echo.elf
 VFS_ELF    := $(BUILD)/exy-vfs.elf
+CONS_ELF   := $(BUILD)/console.elf
 INIT_OBJ   := $(OBJDIR)/init_elf.o
 TEST_OBJ   := $(OBJDIR)/test_elf.o
 ECHO_OBJ   := $(OBJDIR)/echo_elf.o
 VFS_OBJ    := $(OBJDIR)/vfs_elf.o
+CONS_OBJ   := $(OBJDIR)/console_elf.o
 
 CC      := gcc
 AS      := nasm
@@ -85,7 +87,7 @@ ASM_SRCS := \
 
 C_OBJS   := $(patsubst %.c,$(OBJDIR)/%.o,$(C_SRCS))
 ASM_OBJS := $(patsubst %.asm,$(OBJDIR)/%.o,$(ASM_SRCS))
-OBJS     := $(ASM_OBJS) $(C_OBJS) $(INIT_OBJ) $(TEST_OBJ) $(ECHO_OBJ) $(VFS_OBJ)
+OBJS     := $(ASM_OBJS) $(C_OBJS) $(INIT_OBJ) $(TEST_OBJ) $(ECHO_OBJ) $(VFS_OBJ) $(CONS_OBJ)
 
 .PHONY: all iso run clean
 
@@ -126,8 +128,13 @@ $(VFS_OBJ): $(VFS_ELF)
 	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
 	    build/exy-vfs.elf build/obj/vfs_elf.o
 
+$(CONS_OBJ): $(CONS_ELF)
+	@mkdir -p $(@D)
+	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    build/console.elf build/obj/console_elf.o
+
 # Fallback: build userspace if any of the ELFs is missing.
-$(INIT_ELF) $(TEST_ELF) $(ECHO_ELF) $(VFS_ELF):
+$(INIT_ELF) $(TEST_ELF) $(ECHO_ELF) $(VFS_ELF) $(CONS_ELF):
 	$(MAKE) -C $(ROOT_DIR)/src/userspace
 
 $(KERNEL): $(OBJS) $(KERNEL_DIR)/linker/x86_64.ld
