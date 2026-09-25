@@ -6,7 +6,11 @@ KERNEL     := $(BUILD)/exyde-kernel.elf
 ISO        := $(BUILD)/exyde.iso
 ISODIR     := $(BUILD)/iso
 INIT_ELF   := $(BUILD)/init.elf
+TEST_ELF   := $(BUILD)/test.elf
+ECHO_ELF   := $(BUILD)/echo.elf
 INIT_OBJ   := $(OBJDIR)/init_elf.o
+TEST_OBJ   := $(OBJDIR)/test_elf.o
+ECHO_OBJ   := $(OBJDIR)/echo_elf.o
 
 CC      := gcc
 AS      := nasm
@@ -44,6 +48,7 @@ C_SRCS := \
     core/condvar.c \
     core/channel.c \
     core/elf.c \
+    core/elf_table.c \
     core/process.c \
     core/handle.c \
     core/syscall.c \
@@ -78,7 +83,7 @@ ASM_SRCS := \
 
 C_OBJS   := $(patsubst %.c,$(OBJDIR)/%.o,$(C_SRCS))
 ASM_OBJS := $(patsubst %.asm,$(OBJDIR)/%.o,$(ASM_SRCS))
-OBJS     := $(ASM_OBJS) $(C_OBJS) $(INIT_OBJ)
+OBJS     := $(ASM_OBJS) $(C_OBJS) $(INIT_OBJ) $(TEST_OBJ) $(ECHO_OBJ)
 
 .PHONY: all iso run clean
 
@@ -93,19 +98,29 @@ $(OBJDIR)/%.o: %.asm
 	@mkdir -p $(@D)
 	$(AS) $(ASFLAGS) $< -o $@
 
-# Embed the userspace ELF as a byte array.  We cd to $(ROOT_DIR)
-# first so that objcopy mangles the relative path `build/init.elf`
-# into stable symbol names, regardless of where make was invoked.
+# Embed each userspace ELF as a byte array.  objcopy mangles the
+# relative path into stable symbol names, so we always invoke it from
+# the project root:
+#     build/init.elf  ->  _binary_build_init_elf_{start,end}
+#     build/test.elf  ->  _binary_build_test_elf_{start,end}
+#     build/echo.elf  ->  _binary_build_echo_elf_{start,end}
 $(INIT_OBJ): $(INIT_ELF)
 	@mkdir -p $(@D)
 	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
 	    build/init.elf build/obj/init_elf.o
 
-# Fallback: if init.elf is missing, ask the userspace Makefile to
-# build it.  In normal flow the top-level Makefile builds userspace
-# before invoking us, so this only fires for direct `make -C
-# src/kernel` invocations.
-$(INIT_ELF):
+$(TEST_OBJ): $(TEST_ELF)
+	@mkdir -p $(@D)
+	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    build/test.elf build/obj/test_elf.o
+
+$(ECHO_OBJ): $(ECHO_ELF)
+	@mkdir -p $(@D)
+	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    build/echo.elf build/obj/echo_elf.o
+
+# Fallback: build userspace if any of the ELFs is missing.
+$(INIT_ELF) $(TEST_ELF) $(ECHO_ELF):
 	$(MAKE) -C $(ROOT_DIR)/src/userspace
 
 $(KERNEL): $(OBJS) $(KERNEL_DIR)/linker/x86_64.ld

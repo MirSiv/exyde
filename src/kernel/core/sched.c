@@ -95,12 +95,15 @@ static void zombie_push(thread_t *t) {
 }
 
 static void free_thread(thread_t *t) {
-    /* If this is the main thread of a user process, tear the process
-     * down with it.  Today every process has exactly one thread. */
+    /* The main thread of a user process owns the process's primary
+     * reference.  Release it here.  If a parent still holds a handle
+     * on the process (SYS_WAIT pending), the process survives as a
+     * zombie-like object with exited=1 and an exit_code until that
+     * handle is closed. */
     if (t->process) {
         process_t *p = (process_t *)t->process;
         if (p->main_thread == t) {
-            process_destroy(p);
+            process_unref(p);
         }
     }
     /* Drop the thread's own reference to the address space.  For

@@ -19,6 +19,7 @@ typedef u32 handle_t;
 #define HANDLE_KIND_NONE       0u
 #define HANDLE_KIND_TEST       1u   /* kernel selftest only */
 #define HANDLE_KIND_CHANNEL    2u   /* IPC channel (see exyde/channel.h) */
+#define HANDLE_KIND_PROCESS    3u   /* process_t (see exyde/process.h) */
 
 /* One capability table entry.
  *
@@ -34,17 +35,25 @@ typedef struct {
     u32   owns_object;
 } handle_entry_t;
 
+/* Release callback.  Called with the kind and object of an entry
+ * whose owns_object == 1 (a) when the handle is closed via
+ * handle_close, or (b) when the table is destroyed.  May be NULL, in
+ * which case no release is performed. */
+typedef void (*handle_release_fn)(u32 kind, void *object);
+
 typedef struct {
-    handle_entry_t entries[HANDLE_MAX];
-    u32            next_hint;
+    handle_entry_t   entries[HANDLE_MAX];
+    u32              next_hint;
+    handle_release_fn release;
 } handle_table_t;
 
-void handle_table_init(handle_table_t *t);
+/* t->release is stored and used by both handle_close and
+ * handle_table_destroy. */
+void handle_table_init(handle_table_t *t, handle_release_fn release);
 
-/* Release every in-use handle.  release(kind, object) is called
- * only for entries with owns_object == 1.  release may be NULL. */
-void handle_table_destroy(handle_table_t *t,
-                          void (*release)(u32 kind, void *object));
+/* Release every remaining in-use handle.  Calls t->release for each
+ * entry with owns_object == 1.  After this the table is empty. */
+void handle_table_destroy(handle_table_t *t);
 
 /* True iff at least one slot is free (for IPC pre-checks). */
 bool handle_table_has_free_slot(const handle_table_t *t);

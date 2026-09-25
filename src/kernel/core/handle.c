@@ -1,6 +1,6 @@
 #include <exyde/handle.h>
 
-void handle_table_init(handle_table_t *t) {
+void handle_table_init(handle_table_t *t, handle_release_fn release) {
     for (u32 i = 0; i < HANDLE_MAX; ++i) {
         t->entries[i].kind        = HANDLE_KIND_NONE;
         t->entries[i].rights      = 0;
@@ -9,6 +9,7 @@ void handle_table_init(handle_table_t *t) {
         t->entries[i].owns_object = 0;
     }
     t->next_hint = 0;
+    t->release   = release;
 }
 
 handle_t handle_create_ex(handle_table_t *t, u32 kind, u32 rights,
@@ -58,12 +59,22 @@ bool handle_lookup_full(const handle_table_t *t, handle_t h, u32 required,
 
 bool handle_close(handle_table_t *t, handle_t h) {
     if (!t || h >= HANDLE_MAX) return false;
-    if (!t->entries[h].in_use) return false;
-    t->entries[h].kind        = HANDLE_KIND_NONE;
-    t->entries[h].rights      = 0;
-    t->entries[h].object      = (void *)0;
-    t->entries[h].in_use      = 0;
-    t->entries[h].owns_object = 0;
+    handle_entry_t *e = &t->entries[h];
+    if (!e->in_use) return false;
+
+    /* If this handle owned its object, release it now.  Without this
+     * a closed handle's kernel object (a channel, a process) would
+     * survive until handle_table_destroy -- for a process that means
+     * its whole address space is pinned until the parent exits. */
+    if (e->owns_object && t->release) {
+        t->release(e->kind, e->object);
+    }
+
+    e->kind        = HANDLE_KIND_NONE;
+    e->rights      = 0;
+    e->object      = (void *)0;
+    e->in_use      = 0;
+    e->owns_object = 0;
     return true;
 }
 
@@ -74,13 +85,12 @@ bool handle_disown(handle_table_t *t, handle_t h) {
     return true;
 }
 
-void handle_table_destroy(handle_table_t *t,
-                          void (*release)(u32 kind, void *object)) {
+void handle_table_destroy(handle_table_t *t) {
     if (!t) return;
     for (u32 i = 0; i < HANDLE_MAX; ++i) {
         handle_entry_t *e = &t->entries[i];
         if (!e->in_use) continue;
-        if (e->owns_object && release) release(e->kind, e->object);
+        if (e->owns_object && t->release) t->release(e->kind, e->object);
         e->kind        = HANDLE_KIND_NONE;
         e->rights      = 0;
         e->object      = (void *)0;

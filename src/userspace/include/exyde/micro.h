@@ -84,6 +84,30 @@ int exyde_ipc_try_recv_cap(exyde_handle_t ch,
 
 int exyde_handle_close(exyde_handle_t h);
 
+/* Process management (Phase 11.5.2) ------------------------------- */
+
+/* Spawn a program from the kernel's embedded ELF table.  `name` is
+ * the short name without ".elf" ("init", "test", "echo", ...).  If
+ * `cap` is not EXYDE_HANDLE_INVALID, a duplicate of that handle is
+ * installed in the child's handle table and returned to the child by
+ * exyde_get_bootstrap(); this is how a service and its manager share
+ * a channel.
+ *
+ * Returns a handle on the child process, or EXYDE_HANDLE_INVALID with
+ * errno set on failure.  Closing the returned handle releases the
+ * parent's reference to the child. */
+exyde_handle_t exyde_spawn(const char *name, exyde_handle_t cap);
+
+/* Block until the child whose process handle is `proc` exits.
+ * Returns the child's exit code (>= 0) or -1 with errno set.
+ * Must be called with a handle obtained from exyde_spawn. */
+int exyde_wait(exyde_handle_t proc);
+
+/* Inside a child spawned by exyde_spawn, return the bootstrap handle
+ * that the parent passed at spawn time.  Returns EXYDE_HANDLE_INVALID
+ * with errno = ENOENT if no bootstrap was supplied. */
+exyde_handle_t exyde_get_bootstrap(void);
+
 /* Memory primitives ----------------------------------------------- */
 
 /* Map npages anonymous pages.  hint == NULL lets the kernel choose an

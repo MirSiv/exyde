@@ -79,6 +79,40 @@ int exyde_handle_close(exyde_handle_t h) {
     return (int)chk(r);
 }
 
+/* ---- process management ----------------------------------------- */
+
+exyde_handle_t exyde_spawn(const char *name, exyde_handle_t cap) {
+    long r = __exyde_syscall(SYS_SPAWN,
+                             (long)(uintptr_t)name,
+                             0,   /* argv (unused, 11.5.3) */
+                             0,   /* argc must be 0 for now */
+                             cap, 0);
+    if (r < 0 && r > -4096) {
+        errno = (int)-r;
+        return EXYDE_HANDLE_INVALID;
+    }
+    return (exyde_handle_t)r;
+}
+
+int exyde_wait(exyde_handle_t proc) {
+    long r = __exyde_syscall(SYS_WAIT, proc, 0, 0, 0, 0);
+    /* exit codes are i32 and may be negative on purpose; only errno-
+     * style -1..-4095 are treated as syscall failures.  Since the
+     * syscall returns the code directly, we cannot distinguish a
+     * "genuine -1 exit code" from an error without a separate
+     * out-parameter -- acceptable for 11.5.2. */
+    return (int)chk(r);
+}
+
+exyde_handle_t exyde_get_bootstrap(void) {
+    long r = __exyde_syscall(SYS_GET_BOOTSTRAP, 0, 0, 0, 0, 0);
+    if (r < 0 && r > -4096) {
+        errno = (int)-r;
+        return EXYDE_HANDLE_INVALID;
+    }
+    return (exyde_handle_t)r;
+}
+
 /* ---- memory ----------------------------------------------------- */
 
 void *exyde_map(void *hint, unsigned int npages, unsigned int flags) {

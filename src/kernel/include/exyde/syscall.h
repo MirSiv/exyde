@@ -43,6 +43,11 @@
 #define SYS_IPC_RECV_CAP     21  /* (ch, buf, max, out_cap)   -> msg_size   */
 #define SYS_IPC_TRY_RECV_CAP 22  /* (ch, buf, max, out_cap)   -> size/EAGAIN */
 
+/* Phase 11.5.2: process management from userspace. */
+#define SYS_SPAWN            23  /* (name, argv, argc, cap, flags) -> handle */
+#define SYS_WAIT             24  /* (proc_handle)                  -> exit_code */
+#define SYS_GET_BOOTSTRAP    25  /* ()                             -> handle  */
+
 /* ---- transitional: VFS / fd / brk (remove in 11.5.6) --------------- */
 
 #define SYS_WRITE          1
@@ -52,7 +57,7 @@
 #define SYS_LSEEK          9
 #define SYS_BRK            11
 
-#define SYSCALL_MAX        23
+#define SYSCALL_MAX        26
 
 /* Called from the arch syscall entry (ring 0, on the current thread's
  * kernel stack, IF enabled).  Returns a signed value: >=0 success,

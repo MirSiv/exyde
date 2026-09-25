@@ -609,6 +609,40 @@ int main(int argc, char **argv, char **envp) {
         if (exyde_handle_close(xch) != 0) { printf("init: micro cap FAIL code=95\n"); return 95; }
 
         printf("init: micro ipc cap ok\n");
+
+        /* ---- spawn / wait (Phase 11.5.2) ------------------------- */
+
+        /* Create a channel that we will pass to the child. */
+        exyde_handle_t boot_ch = exyde_ipc_create(16, 2);
+        if (boot_ch == EXYDE_HANDLE_INVALID) {
+            printf("init: micro spawn FAIL bootstrap create\n");
+            return 110;
+        }
+
+        /* Spawn the placeholder "test" ELF (currently: main returns 0). */
+        exyde_handle_t child = exyde_spawn("test", boot_ch);
+        if (child == EXYDE_HANDLE_INVALID) {
+            printf("init: micro spawn FAIL errno=%d\n", errno);
+            return 111;
+        }
+
+        int code = exyde_wait(child);
+        if (code != 0) {
+            printf("init: micro spawn FAIL wait code=%d\n", code);
+            return 112;
+        }
+
+        /* The parent's own copy of boot_ch is still open and usable. */
+        char probe[16] = "p";
+        if (exyde_ipc_try_send(boot_ch, probe, 16) != 0) {
+            printf("init: micro spawn FAIL bootstrap not duplicated\n");
+            return 113;
+        }
+
+        if (exyde_handle_close(boot_ch) != 0) return 114;
+        if (exyde_handle_close(child)   != 0) return 115;
+
+        printf("init: micro spawn ok\n");
     }
 
     return 0;

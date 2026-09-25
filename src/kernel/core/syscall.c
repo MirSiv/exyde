@@ -13,6 +13,8 @@
 #include <exyde/exec.h>
 #include <exyde/channel.h>
 #include <exyde/arch.h>
+#include <exyde/exec.h>
+#include <exyde/elf_table.h>
 #include <exyde/panic.h>
 
 /* One-shot kernel bounce buffer for the transitional SYS_READ / SYS_WRITE.
@@ -51,7 +53,9 @@ static sysret_t sys_ping(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
 }
 
 static sysret_t sys_exit(u64 code, u64 a1, u64 a2, u64 a3, u64 a4) {
-    (void)code; (void)a1; (void)a2; (void)a3; (void)a4;
+    (void)a1; (void)a2; (void)a3; (void)a4;
+    process_t *p = current_process();
+    if (p) process_exit(p, (int)(i32)code);
     thread_exit();
 }
 
@@ -465,6 +469,149 @@ static sysret_t sys_yield(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
     return 0;
 }
 
+/* ---- process management (Phase 11.5.2) ----------------------------- */
+
+#define SPAWN_NAME_MAX  64
+
+/* Spawn a process from the kernel's embedded ELF table.
+ *
+ *   name_u   : user VA of a NUL-terminated name ("init", "test", ...)
+ *   argv_u   : user VA of argv array; may be 0 for "no arguments".
+ *              (Arg passing from userspace arrives in 11.5.3; for now
+ *              argv is built internally as { name, NULL }.)
+ *   argc     : accepted for API symmetry; must be 0.
+ *   cap_h    : handle in the caller's table that will be duplicated
+ *              into the child's table and stored as its
+ *              bootstrap_handle.  HANDLE_INVALID means "no bootstrap".
+ *   flags    : must be 0 for now.
+ *
+ * Returns a fresh handle on the child process (HANDLE_KIND_PROCESS),
+ * or -errno.  The handle holds a process reference; closing it or
+ * exiting the parent releases the reference, destroying the child
+ * once its own main thread has also exited.
+ *
+ * IRQs are disabled for the duration to prevent the timer from
+ * scheduling the child before its handles are installed. */
+static sysret_t sys_spawn(u64 name_u, u64 argv_u, u64 argc,
+                          u64 cap_h, u64 flags) {
+    (void)argv_u;
+    process_t *parent = current_process();
+    if (!parent) return SYSRET_ERR(EPERM);
+    if (flags != 0) return SYSRET_ERR(EINVAL);
+    if (argc != 0)  return SYSRET_ERR(EINVAL);
+
+    char name[SPAWN_NAME_MAX];
+    int sr = strncpy_from_user(parent->space, name, (vaddr_t)name_u,
+                               sizeof(name));
+    if (sr < 0) return SYSRET_ERR((u64)-sr);
+
+    const elf_entry_t *elf = elf_table_lookup(name);
+    if (!elf || !elf->blob_start || elf_entry_size(elf) == 0)
+        return SYSRET_ERR(ENOENT);
+
+    /* Validate the bootstrap handle before touching anything heavy. */
+    if (cap_h != (u64)HANDLE_INVALID) {
+        void *obj = (void *)0; u32 kind = 0;
+        if (!handle_lookup(&parent->handles, (handle_t)cap_h,
+                           HANDLE_RIGHT_TRANSFER, &obj, &kind))
+            return SYSRET_ERR(EPERM);
+    }
+
+    /* The child needs room for at least the process handle in the
+     * parent's table; give ENFILE if the parent is full. */
+    if (!handle_table_has_free_slot(&parent->handles))
+        return SYSRET_ERR(EMFILE);
+
+    u64 irq = arch_irqs_save_and_disable();
+
+    const char *argv[] = { name, (const char *)0 };
+    const char *envp[] = { "PATH=/", (const char *)0 };
+
+    process_t *child = process_spawn(name, elf->blob_start,
+                                     (size_t)elf_entry_size(elf),
+                                     1, argv, 1, envp);
+    if (!child) {
+        arch_irqs_restore(irq);
+        return SYSRET_ERR(ENOMEM);
+    }
+
+    /* Duplicate the caller's bootstrap handle into the child. */
+    if (cap_h != (u64)HANDLE_INVALID) {
+        void *obj = (void *)0; u32 kind = 0, rights = 0;
+        /* lookup_full for rights */
+        if (!handle_lookup_full(&parent->handles, (handle_t)cap_h,
+                                HANDLE_RIGHT_TRANSFER, &obj, &kind, &rights)) {
+            /* Should not happen: we validated above. */
+            process_unref(child);
+            arch_irqs_restore(irq);
+            return SYSRET_ERR(EPERM);
+        }
+        /* DUPLICATE semantics: parent keeps owning the object; the
+         * child gets a non-owning copy.  Only the parent's handle
+         * releases the channel_t when closed, so closing both the
+         * parent's and the child's copy does not double-free. */
+        handle_t child_h = handle_create_ex(&child->handles, kind, rights,
+                                            obj, false);
+        if (child_h == HANDLE_INVALID) {
+            process_unref(child);
+            arch_irqs_restore(irq);
+            return SYSRET_ERR(EMFILE);
+        }
+        child->bootstrap_handle = child_h;
+    }
+
+    /* Hand the parent a handle on the child.  Takes a ref. */
+    process_ref(child);
+    handle_t ph = handle_create(&parent->handles, HANDLE_KIND_PROCESS,
+                                HANDLE_RIGHT_READ, child);
+    if (ph == HANDLE_INVALID) {
+        process_unref(child);
+        process_unref(child);
+        arch_irqs_restore(irq);
+        return SYSRET_ERR(EMFILE);
+    }
+
+    arch_irqs_restore(irq);
+    return (sysret_t)ph;
+}
+
+/* Block until the child whose handle is proc_h has called SYS_EXIT.
+ * Returns its exit code (i32, may be negative).  Closing the handle
+ * later drops the process's last reference. */
+static sysret_t sys_wait(u64 proc_h, u64 a1, u64 a2, u64 a3, u64 a4) {
+    (void)a1; (void)a2; (void)a3; (void)a4;
+    process_t *parent = current_process();
+    if (!parent) return SYSRET_ERR(EPERM);
+
+    void *obj = (void *)0; u32 kind = 0;
+    if (!handle_lookup(&parent->handles, (handle_t)proc_h,
+                       HANDLE_RIGHT_READ, &obj, &kind))
+        return SYSRET_ERR(EBADF);
+    if (kind != HANDLE_KIND_PROCESS) return SYSRET_ERR(EINVAL);
+
+    process_t *child = (process_t *)obj;
+
+    arch_irqs_disable();
+    while (!child->exited) {
+        waitq_push(&child->waiters, thread_current());
+        sched_block();
+    }
+    int code = child->exit_code;
+    arch_irqs_enable();
+
+    return (sysret_t)(i64)code;
+}
+
+/* Return the bootstrap handle that the parent passed to SYS_SPAWN,
+ * or -ENOENT if none was provided. */
+static sysret_t sys_get_bootstrap(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4;
+    process_t *p = current_process();
+    if (!p) return SYSRET_ERR(EPERM);
+    if (p->bootstrap_handle == HANDLE_INVALID) return SYSRET_ERR(ENOENT);
+    return (sysret_t)p->bootstrap_handle;
+}
+
 /* ==================================================================== */
 /* Transitional: VFS / fd / brk (remove in 11.5.6)                      */
 /* ==================================================================== */
@@ -612,6 +759,9 @@ static const syscall_fn_t syscall_table[SYSCALL_MAX] = {
     [SYS_IPC_SEND_CAP]  = sys_ipc_send_cap,
     [SYS_IPC_RECV_CAP]  = sys_ipc_recv_cap,
     [SYS_IPC_TRY_RECV_CAP] = sys_ipc_try_recv_cap,
+    [SYS_SPAWN]            = sys_spawn,
+    [SYS_WAIT]             = sys_wait,
+    [SYS_GET_BOOTSTRAP]    = sys_get_bootstrap,
     [SYS_MAP]           = sys_map,
     [SYS_UNMAP]         = sys_unmap,
     [SYS_YIELD]         = sys_yield,

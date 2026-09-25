@@ -163,7 +163,10 @@ process_t *process_spawn(const char *name,
     /* Thread owns one reference to the space.  process_destroy drops
      * the process's reference; free_thread drops the thread's. */
     vmm_space_ref(p->space);
-    thread_t *t = thread_create_ex(user_thread_entry, p, name, p->space);
+    /* Use p->name (heap copy) so t->name outlives the caller's stack
+     * frame.  p was created with a copy of `name` inside
+     * process_create_from_elf. */
+    thread_t *t = thread_create_ex(user_thread_entry, p, p->name, p->space);
     if (t) {
         t->process      = p;
         p->main_thread  = t;

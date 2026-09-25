@@ -23,6 +23,7 @@
 #include <exyde/condev.h>
 #include <exyde/exec.h>
 #include <exyde/init_elf.h>
+#include <exyde/elf_table.h>
 #include <exyde/uaccess.h>
 #include <exyde/vfs.h>
 #include <exyde/ramfs.h>
@@ -108,7 +109,7 @@ static void heap_selftest(void) {
 
 static void handle_selftest(void) {
     handle_table_t t;
-    handle_table_init(&t);
+    handle_table_init(&t, (handle_release_fn)0);
 
     handle_t h1 = handle_create(&t, HANDLE_KIND_TEST, HANDLE_RIGHT_READ, (void *)0x1234);
     handle_t h2 = handle_create(&t, HANDLE_KIND_TEST, HANDLE_RIGHT_READ | HANDLE_RIGHT_WRITE, (void *)0x5678);
@@ -448,13 +449,18 @@ static void ring3_syscall_selftest(void) {
         panic("ring3 test: sys_ping returned wrong value");
     }
 
-    u64 before_destroy = pmm_free_page_count();
-    process_destroy(p);
-    u64 after_destroy = pmm_free_page_count();
-
-    if (after_destroy - before_destroy != 6) {
-        panic("ring3 test: unexpected page delta on destroy");
-    }
+    /* The r3 test does NOT attach the process to the thread as its
+     * main_thread, so we own the process's primary reference.  The
+     * thread has already exited (via user_fault_handler -> thread_exit)
+     * and been queued for reaping, but it holds no process ref, so
+     * the only way to release p is to call process_unref here.
+     *
+     * Page-count delta is not checked: with refcounting in place the
+     * actual free happens inside process_unref, and the exact timing
+     * relative to the zombie reaper is not deterministic.  The
+     * userspace_selftest below performs the same leak check across a
+     * full spawn/exit cycle. */
+    process_unref(p);
 
     console_ok("ring3 test: OK (SYSCALL from CPL3, arg passing, ping round-trip)\n");
 }
@@ -575,7 +581,9 @@ static void fd_selftest(void) {
 }
 
 static void userspace_selftest(void) {
-    if (!exyde_init_elf_size) panic("userspace test: no init elf");
+    const elf_entry_t *init_elf = elf_table_lookup("init");
+    if (!init_elf || !init_elf->blob_start || elf_entry_size(init_elf) == 0)
+        panic("userspace test: no init elf in table");
 
     const char *argv[] = { "init", (const char *)0 };
     const char *envp[] = { "PATH=/", (const char *)0 };
@@ -585,7 +593,8 @@ static void userspace_selftest(void) {
     u64 before = pmm_free_page_count();
 
     process_t *init = process_spawn("init",
-                                    exyde_init_elf, exyde_init_elf_size,
+                                    init_elf->blob_start,
+                                    (size_t)elf_entry_size(init_elf),
                                     argc, argv, envc, envp);
     if (!init) panic("userspace test: spawn init failed");
 

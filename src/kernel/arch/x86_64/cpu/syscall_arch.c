@@ -24,6 +24,11 @@ typedef struct {
 
 static syscall_state_t syscall_state;
 
+/* Export of &syscall_state for enter_user.asm: it forces
+ * MSR_KERNEL_GS_BASE to this address right before iretq'ing to ring 3,
+ * so a fresh user process cannot inherit a stale kernel GS base. */
+u64 gs_kernel_state = 0;
+
 extern void syscall_entry(void);
 
 static inline u64 rdmsr(u32 msr) {
@@ -67,6 +72,10 @@ void syscall_arch_init(void) {
     /* GS bases:  MSR_GS_BASE = user GS (0), MSR_KERNEL_GS_BASE = state. */
     wrmsr(MSR_GS_BASE,        0);
     wrmsr(MSR_KERNEL_GS_BASE, (u64)(uintptr_t)&syscall_state);
+
+    /* Also publish the address so enter_user.asm can restore the
+     * invariant after a fresh user process is about to be launched. */
+    gs_kernel_state = (u64)(uintptr_t)&syscall_state;
 }
 
 void arch_set_kernel_stack(vaddr_t rsp0) {
