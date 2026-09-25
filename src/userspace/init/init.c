@@ -77,6 +77,71 @@ int main(int argc, char **argv, char **envp) {
         printf(" [end]\n");
     }
 
+    /* --- string.h tail regression (Phase 11.3.2) --- */
+    {
+        /* strpbrk: first char of s that is in accept. */
+        const char *p1 = strpbrk("hello, world", " ,");
+        const char *p2 = strpbrk("hello", "xyz");
+        const char *p3 = strpbrk("hello", "");
+        printf("init: strpbrk [%s] [%s] [%s]\n",
+               p1 ? p1 : "(null)",
+               p2 ? p2 : "(null)",
+               p3 ? p3 : "(null)");
+        if (!p1 || strcmp(p1, ", world") != 0) return 30;
+        if (p2) return 31;
+        if (p3) return 32;
+
+        /* memchr: bounded search, must not read past n bytes. */
+        const char h[] = "hello";
+        const char *m1 = (const char *)memchr(h, 'l', 5);    /* -> h+2 */
+        const char *m2 = (const char *)memchr(h, 'l', 2);    /* miss  */
+        const char *m3 = (const char *)memchr(h, '\0', 5);  /* miss  */
+        const char *m4 = (const char *)memchr(h, '\0', 6);  /* -> h+5 */
+        const char *m5 = (const char *)memchr(h, 'h', 0);    /* n=0 miss */
+        printf("init: memchr [%d] [%s] [%s] [%d] [%s]\n",
+               m1 ? (int)(m1 - h) : -1,
+               m2 ? "hit" : "miss",
+               m3 ? "hit" : "miss",
+               m4 ? (int)(m4 - h) : -1,
+               m5 ? "hit" : "miss");
+        if (!m1 || (m1 - h) != 2) return 33;
+        if (m2) return 34;
+        if (m3) return 35;
+        if (!m4 || (m4 - h) != 5) return 36;
+        if (m5) return 37;
+
+        /* strspn / strcspn edge cases. */
+        size_t s1 = strspn("aaabbb", "a");    /* 3 */
+        size_t s2 = strspn("abc", "");        /* 0 */
+        size_t s3 = strcspn("abcdef", "cd");  /* 2 */
+        size_t s4 = strcspn("abcdef", "");    /* 6 */
+        printf("init: strspn/cspn [%zu] [%zu] [%zu] [%zu]\n",
+               s1, s2, s3, s4);
+        if (s1 != 3 || s2 != 0 || s3 != 2 || s4 != 6) return 38;
+
+        /* strncpy: NUL-pad, n=0 writes nothing, boundary at n. */
+        char nc1[8];
+        memset(nc1, 'X', sizeof nc1);
+        strncpy(nc1, "abc", 5);
+        if (nc1[0] != 'a' || nc1[1] != 'b' || nc1[2] != 'c' ||
+            nc1[3] != 0   || nc1[4] != 0   || nc1[5] != 'X') return 39;
+
+        char nc2[4] = "abc";
+        strncpy(nc2, "xyz", 0);
+        if (strcmp(nc2, "abc") != 0) return 40;
+
+        /* strncat: bounded append, always NUL-terminated, n=0 no-op. */
+        char na1[16] = "foo";
+        strncat(na1, "barbaz", 3);
+        if (strcmp(na1, "foobar") != 0) return 41;
+
+        char na2[16] = "foo";
+        strncat(na2, "bar", 0);
+        if (strcmp(na2, "foo") != 0) return 42;
+
+        printf("init: strncpy/strncat ok\n");
+    }
+
     /* --- numeric conversion regression --- */
     printf("init: strtol [%ld] [%ld] [%ld]\n",
            strtol("-17", NULL, 0),

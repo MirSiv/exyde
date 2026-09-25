@@ -37,6 +37,15 @@ int memcmp(const void *a, const void *b, size_t n) {
     return 0;
 }
 
+void *memchr(const void *s, int c, size_t n) {
+    const unsigned char *p = (const unsigned char *)s;
+    unsigned char ch = (unsigned char)c;
+    for (size_t i = 0; i < n; ++i) {
+        if (p[i] == ch) return (void *)(p + i);
+    }
+    return NULL;
+}
+
 /* --- length / compare ---------------------------------------------- */
 
 size_t strlen(const char *s) {
@@ -119,6 +128,15 @@ char *strstr(const char *haystack, const char *needle) {
         const char *n = needle;
         while (*h && *n && *h == *n) { ++h; ++n; }
         if (!*n) return (char *)haystack;
+    }
+    return NULL;
+}
+
+char *strpbrk(const char *s, const char *accept) {
+    for (; *s; ++s) {
+        for (const char *a = accept; *a; ++a) {
+            if (*a == *s) return (char *)s;
+        }
     }
     return NULL;
 }
