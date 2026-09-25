@@ -46,3 +46,19 @@ bool handle_close(handle_table_t *t, handle_t h) {
     t->entries[h].kind   = 0;
     return true;
 }
+
+void handle_table_destroy(handle_table_t *t,
+                          void (*release)(u32 kind, void *object)) {
+    if (!t) return;
+    for (u32 i = 0; i < HANDLE_MAX; ++i) {
+        handle_entry_t *e = &t->entries[i];
+        if (!e->in_use) continue;
+        if (release) release(e->kind, e->object);
+        e->kind   = HANDLE_KIND_NONE;
+        e->rights = 0;
+        e->object = (void *)0;
+        e->in_use = 0;
+    }
+    t->next_hint = 0;
+}
+

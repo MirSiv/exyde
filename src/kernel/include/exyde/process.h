@@ -8,6 +8,11 @@
 #include <exyde/handle.h>
 #include <exyde/fd.h>
 
+/* Kernel-side process object.
+ *
+ * Phase 11.5.0 note: `image`, `fds`, and `brk` are transitional fields
+ * -- they belong to the monolithic era and will be removed as VFS and
+ * POSIX move to userspace services (see EXYDE_PHASES.md, Phase 11.5). */
 typedef struct process {
     u64            pid;
     const char    *name;
@@ -16,8 +21,9 @@ typedef struct process {
     thread_t      *main_thread;
     handle_table_t handles;
     fd_table_t     fds;
-    u64            initial_rsp;  /* set by process_spawn; 0 otherwise */
-    vaddr_t        brk;          /* program break: first free user VA */
+    u64            initial_rsp;
+    vaddr_t        brk;          /* transitional */
+    vaddr_t        next_map_va;  /* hint for SYS_MAP with hint == 0 */
 } process_t;
 
 process_t *process_create_from_elf(const char *name,

@@ -4,21 +4,46 @@
 #include <exyde/types.h>
 #include <exyde/errno.h>
 
-/* Native Exyde ABI, Phase 7-10.  Numbers are stable. */
-#define SYS_PING           0    /* ()                       -> u64         */
-#define SYS_WRITE          1    /* (fd, buf, count)         -> bytes       */
-#define SYS_EXIT           2    /* (code)                   -> never        */
-#define SYS_HANDLE_CREATE  3    /* (kind, rights, object)   -> handle       */
-#define SYS_HANDLE_CLOSE   4    /* (handle)                 -> 0            */
-#define SYS_HANDLE_QUERY   5    /* (handle, required)       -> 1 / -EPERM   */
-#define SYS_READ           6    /* (fd, buf, count)         -> bytes       */
-#define SYS_OPEN           7    /* (path, flags, mode)      -> fd          */
-#define SYS_CLOSE          8    /* (fd)                     -> 0            */
-#define SYS_LSEEK          9    /* (fd, off, whence)        -> new offset  */
-#define SYS_GETPID         10   /* ()                       -> pid          */
-#define SYS_BRK            11   /* (new_brk)                -> brk          */
+/* Native Exyde ABI.
+ *
+ * Phase 11.5.0: this is the microkernel ABI.  The kernel exposes
+ * capabilities, IPC, memory primitives, and process/thread primitives,
+ * and nothing else.
+ *
+ * The VFS/fd/brk syscalls below are TRANSITIONAL.  They still exist so
+ * that pre-11.5 userspace (init.elf) keeps working while VFS is moved
+ * to a userspace server step by step (see EXYDE_PHASES.md, Phase 11.5).
+ * They are NOT part of the microkernel target ABI and will be removed
+ * in Phase 11.5.6.  Do not write new code against them. */
 
-#define SYSCALL_MAX        12
+/* ---- microkernel core (permanent) ---------------------------------- */
+
+#define SYS_PING           0    /* ()                       -> u64         */
+#define SYS_EXIT           2    /* (code)                   -> never       */
+#define SYS_HANDLE_CREATE  3    /* (kind, rights, object)   -> handle      */
+#define SYS_HANDLE_CLOSE   4    /* (handle)                 -> 0           */
+#define SYS_HANDLE_QUERY   5    /* (handle, required)       -> 1 / -EPERM  */
+#define SYS_GETPID         10   /* ()                       -> pid         */
+
+#define SYS_IPC_CREATE     12   /* (msg_size, capacity)     -> handle      */
+#define SYS_IPC_SEND       13   /* (handle, buf, len)       -> 0           */
+#define SYS_IPC_RECV       14   /* (handle, buf, max)       -> msg_size    */
+#define SYS_IPC_TRY_SEND   15   /* (handle, buf, len)       -> 0 / -EAGAIN */
+#define SYS_IPC_TRY_RECV   16   /* (handle, buf, max)       -> size/EAGAIN */
+#define SYS_MAP            17   /* (hint, npages, flags)    -> vaddr       */
+#define SYS_UNMAP          18   /* (vaddr, npages)          -> 0           */
+#define SYS_YIELD          19   /* ()                       -> 0           */
+
+/* ---- transitional: VFS / fd / brk (remove in 11.5.6) --------------- */
+
+#define SYS_WRITE          1
+#define SYS_READ           6
+#define SYS_OPEN           7
+#define SYS_CLOSE          8
+#define SYS_LSEEK          9
+#define SYS_BRK            11
+
+#define SYSCALL_MAX        20
 
 /* Called from the arch syscall entry (ring 0, on the current thread's
  * kernel stack, IF enabled).  Returns a signed value: >=0 success,

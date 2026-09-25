@@ -33,6 +33,7 @@ C_SRCS := \
     libc/env.c \
     libc/unistd.c \
     libc/stdio.c \
+    libc/micro.c \
     init/init.c
 
 ASM_SRCS := crt/crt0.asm

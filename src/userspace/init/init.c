@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <errno.h>
+#include <exyde/micro.h>
 
 /* init for Phase 11.3.1 (environment). */
 
@@ -385,6 +386,88 @@ int main(int argc, char **argv, char **envp) {
         const char *path4 = getenv("PATH");
         printf("init: env final PATH [%s]\n", path4 ? path4 : "(null)");
         if (!path4 || strcmp(path4, "/new") != 0) return 26;
+    }
+
+    /* --- microkernel ABI regression (Phase 11.5.0) --- */
+    {
+        /* IPC: create + try_send + try_recv + EAGAIN + close. */
+        exyde_handle_t ch = exyde_ipc_create(16, 2);
+        if (ch == EXYDE_HANDLE_INVALID) {
+            printf("init: micro FAIL ipc_create errno=%d\n", errno);
+            return 30;
+        }
+
+        char msg1[16] = "msg-1";
+        char msg2[16] = "msg-2";
+        char msg3[16] = "msg-3";
+        if (exyde_ipc_try_send(ch, msg1, 16) != 0) return 31;
+        if (exyde_ipc_try_send(ch, msg2, 16) != 0) return 32;
+
+        errno = 0;
+        if (exyde_ipc_try_send(ch, msg3, 16) != -1 || errno != EAGAIN)
+            return 33;
+
+        char out[16];
+        if (exyde_ipc_recv(ch, out, 16) != 16) return 34;
+        if (strcmp(out, "msg-1") != 0) return 35;
+        if (exyde_ipc_recv(ch, out, 16) != 16) return 36;
+        if (strcmp(out, "msg-2") != 0) return 37;
+
+        errno = 0;
+        if (exyde_ipc_try_recv(ch, out, 16) != -1 || errno != EAGAIN)
+            return 38;
+
+        if (exyde_handle_close(ch) != 0) return 39;
+
+        printf("init: micro ipc ok\n");
+
+        /* IPC: EINVAL on bad create args. */
+        errno = 0;
+        if (exyde_ipc_create(0, 2) != EXYDE_HANDLE_INVALID || errno != EINVAL)
+            return 40;
+        errno = 0;
+        if (exyde_ipc_create(16, 0) != EXYDE_HANDLE_INVALID || errno != EINVAL)
+            return 41;
+        errno = 0;
+        if (exyde_ipc_create(9999, 2) != EXYDE_HANDLE_INVALID || errno != EINVAL)
+            return 42;
+
+        /* MAP / UNMAP. */
+        unsigned char *p = (unsigned char *)exyde_map(NULL, 1, EXYDE_MAP_WRITE);
+        if (!p) {
+            printf("init: micro FAIL map errno=%d\n", errno);
+            return 43;
+        }
+        p[0] = 0xAB;
+        p[EXYDE_PAGE_SIZE - 1] = 0xCD;
+        if (p[0] != 0xAB || p[EXYDE_PAGE_SIZE - 1] != 0xCD) return 44;
+        if (exyde_unmap(p, 1) != 0) return 45;
+
+        /* MAP: read-only (flags = 0) is accepted; write-only is the
+         * common case.  Just check it does not fail. */
+        void *ro = exyde_map(NULL, 1, 0);
+        if (!ro) return 46;
+        if (exyde_unmap(ro, 1) != 0) return 47;
+
+        /* MAP: npages = 0 -> EINVAL. */
+        errno = 0;
+        if (exyde_map(NULL, 0, EXYDE_MAP_WRITE) != NULL || errno != EINVAL)
+            return 48;
+
+        /* MAP: unknown flag -> EINVAL (kernel only accepts VM_WRITE). */
+        errno = 0;
+        if (exyde_map(NULL, 1, 0x8000u) != NULL || errno != EINVAL)
+            return 49;
+
+        /* UNMAP: unaligned address -> EINVAL. */
+        errno = 0;
+        if (exyde_unmap((void *)(uintptr_t)1, 1) != -1 || errno != EINVAL)
+            return 50;
+
+        /* YIELD always succeeds. */
+        if (exyde_yield() != 0) return 51;
+
+        printf("init: micro map/yield ok\n");
     }
 
     return 0;

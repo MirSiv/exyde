@@ -14,27 +14,44 @@
  *     syscall
  *     rax       = result: >= 0 on success, -errno on error.
  *
- * This header is freestanding: no kernel types, no kernel headers.
- * A userspace build only needs the numbers, not SYSRET_OK/ERR. */
+ * Phase 11.5.0: this is the microkernel ABI.  See EXYDE.md.
+ *
+ * The VFS/fd/brk numbers below are TRANSITIONAL.  They keep pre-11.5
+ * userspace (init.elf) alive while VFS moves to userspace step by
+ * step (see EXYDE_PHASES.md, Phase 11.5).  They are not part of the
+ * target microkernel ABI and will be removed in Phase 11.5.6.  Do
+ * not write new code against them. */
 
-/* ---- syscall numbers --------------------------------------------- */
+/* ---- microkernel core (permanent) ------------------------------- */
 
 #define SYS_PING           0
-#define SYS_WRITE          1
 #define SYS_EXIT           2
 #define SYS_HANDLE_CREATE  3
 #define SYS_HANDLE_CLOSE   4
 #define SYS_HANDLE_QUERY   5
+#define SYS_GETPID         10
+
+#define SYS_IPC_CREATE     12
+#define SYS_IPC_SEND       13
+#define SYS_IPC_RECV       14
+#define SYS_IPC_TRY_SEND   15
+#define SYS_IPC_TRY_RECV   16
+#define SYS_MAP            17
+#define SYS_UNMAP          18
+#define SYS_YIELD          19
+
+/* ---- transitional: VFS / fd / brk (remove in 11.5.6) ------------ */
+
+#define SYS_WRITE          1
 #define SYS_READ           6
 #define SYS_OPEN           7
 #define SYS_CLOSE          8
 #define SYS_LSEEK          9
-#define SYS_GETPID         10
 #define SYS_BRK            11
 
-#define SYSCALL_MAX        12
+#define SYSCALL_MAX        20
 
-/* ---- errno values ------------------------------------------------- */
+/* ---- errno values ----------------------------------------------- */
 /* Linux-compatible, so Phase 17 translation is trivial. */
 
 #define E_OK         0

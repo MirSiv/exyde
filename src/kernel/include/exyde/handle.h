@@ -13,10 +13,16 @@ typedef u32 handle_t;
 #define HANDLE_RIGHT_EXEC   (1u << 2)
 #define HANDLE_RIGHT_ALL    (HANDLE_RIGHT_READ | HANDLE_RIGHT_WRITE | HANDLE_RIGHT_EXEC)
 
-/* Object kinds.  Extended as subsystems appear. */
-#define HANDLE_KIND_NONE         0u
-#define HANDLE_KIND_TEST         1u
-#define HANDLE_KIND_CONSOLE_OUT  2u
+/* Kernel object kinds.  These are KERNEL objects only.  Files,
+ * directories, fd tables, and consoles are userspace concepts and are
+ * NOT kernel handle kinds -- they are negotiated between userspace
+ * services over IPC.
+ *
+ * Kinds 3+ are reserved for future kernel objects (VSPACE, THREAD,
+ * IRQ capability, ...). */
+#define HANDLE_KIND_NONE       0u
+#define HANDLE_KIND_TEST       1u   /* kernel selftest only */
+#define HANDLE_KIND_CHANNEL    2u   /* IPC channel (see exyde/channel.h) */
 
 typedef struct {
     u32   kind;
@@ -32,6 +38,13 @@ typedef struct {
 } handle_table_t;
 
 void handle_table_init(handle_table_t *t);
+
+/* Release every handle in the table, invoking `release(kind, object)`
+ * for each in-use entry.  `release` may be NULL, in which case only
+ * the table is cleared (use for tables that hold no releasable
+ * objects).  After this call the table is empty; it is not freed. */
+void handle_table_destroy(handle_table_t *t,
+                          void (*release)(u32 kind, void *object));
 
 handle_t handle_create(handle_table_t *t, u32 kind, u32 rights, void *object);
 
