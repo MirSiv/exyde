@@ -10,11 +10,8 @@
  * capabilities, IPC, memory primitives, and process/thread primitives,
  * and nothing else.
  *
- * The VFS/fd/brk syscalls below are TRANSITIONAL.  They still exist so
- * that pre-11.5 userspace (init.elf) keeps working while VFS is moved
- * to a userspace server step by step (see EXYDE_PHASES.md, Phase 11.5).
- * They are NOT part of the microkernel target ABI and will be removed
- * in Phase 11.5.6.  Do not write new code against them. */
+ * The transitional VFS / fd / brk syscalls of the pre-11.5 era are
+ * gone.  All I/O and memory growth now live in userspace. */
 
 /* ---- microkernel core (permanent) ---------------------------------- */
 
@@ -55,9 +52,9 @@
  * Phase 11.5.6. */
 #define SYS_KPUTS          1    /* (buf, len)               -> bytes       */
 
-/* ---- transitional (remove in 11.5.6c) ------------------------------ */
-
-#define SYS_BRK            11
+/* Numbers 6, 7, 8, 9, 11 were transitional VFS / fd / brk syscalls.
+ * They are retired; the numbers remain reserved and must not be
+ * reused. */
 
 #define SYSCALL_MAX        26
 

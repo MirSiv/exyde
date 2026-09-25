@@ -56,7 +56,6 @@ process_t *process_create_from_elf(const char *name,
 
     vaddr_t m = (vaddr_t)(img.load_base + img.load_size);
     p->next_map_va      = (m + 0xFFFF) & ~((vaddr_t)0xFFFF);
-    p->brk              = m;
 
     p->refcount         = 1;
     p->exit_code        = 0;

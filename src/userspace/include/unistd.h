@@ -19,7 +19,6 @@ int     close(int fd);
 off_t   lseek(int fd, off_t offset, int whence);
 pid_t   getpid(void);
 
-void   *sbrk(long increment);
 
 /* POSIX declares environ in <unistd.h>; also declared in <stdlib.h>. */
 extern char **environ;

@@ -25,7 +25,6 @@ typedef struct process {
     handle_table_t handles;
     u64            initial_rsp;
     vaddr_t        next_map_va;  /* hint for SYS_MAP with hint == 0 */
-    vaddr_t        brk;          /* transitional, removed in 11.5.6c */
 
     u32            refcount;
     i32            exit_code;

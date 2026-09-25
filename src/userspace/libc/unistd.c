@@ -94,18 +94,6 @@ pid_t getpid(void) {
     return (pid_t)posix_ret(r);
 }
 
-void *sbrk(long increment) {
-    long cur = __exyde_syscall(SYS_BRK, 0, 0, 0, 0, 0);
-    if (cur < 0) { errno = (int)-cur; return (void *)-1; }
-    if (increment == 0) return (void *)(uintptr_t)cur;
-    long want = cur + increment;
-    if (want < cur) { errno = ENOMEM; return (void *)-1; }
-    long got = __exyde_syscall(SYS_BRK, (unsigned long)want, 0, 0, 0, 0);
-    if (got < 0) { errno = (int)-got; return (void *)-1; }
-    if (got != want) { errno = ENOMEM; return (void *)-1; }
-    return (void *)(uintptr_t)cur;
-}
-
 void _exit(int status) {
     __exyde_syscall(SYS_EXIT, status, 0, 0, 0, 0);
     for (;;) __asm__ volatile ("hlt");

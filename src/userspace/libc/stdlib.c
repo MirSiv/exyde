@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <unistd.h>
+#include <exyde/micro.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -8,8 +9,9 @@
 /*
  * malloc / free / calloc / realloc -- Phase 11.1.3.
  *
- * Boundary-tag allocator over brk.  The arena is one contiguous region
- * grown by sbrk() in 64 KiB chunks.  Every block is preceded by a
+ * Boundary-tag allocator over an mmap-backed arena.  The arena is
+ * one contiguous 4 MiB region obtained once at first malloc via
+ * exyde_map(); it never grows.  Every block is preceded by a
  * 16-byte header:
  *
  *     struct block { size_t size; size_t prev_size; };
@@ -18,8 +20,8 @@
  *   - `prev_size` : payload size of the preceding block, or 0 if this
  *                   is the first block on the arena.
  *
- * free() never returns pages to the kernel -- that would require sbrk
- * to shrink and a per-page tracking map.  It coalesces with adjacent
+ * free() never returns pages to the kernel -- that would require an
+ * unmap and a per-page tracking map.  It coalesces with adjacent
  * free blocks, so a long-lived process keeps reusing the same region.
  *
  * malloc() picks the first free block that fits and splits it when the
@@ -34,7 +36,12 @@
  * (Phase 12+), add a lock or per-thread arenas.
  */
 
-#define ARENA_CHUNK  ((size_t)65536)
+/* One-shot arena: mmap ARENA_SIZE bytes at first malloc and never
+ * grow.  The boundary-tag walker assumes a contiguous region, and
+ * SYS_MAP does not guarantee that successive calls return adjacent
+ * pages.  4 MiB is plenty for the current test suite. */
+#define ARENA_SIZE   ((size_t)4 * 1024 * 1024)
+#define ARENA_PAGES  ((unsigned)(ARENA_SIZE / EXYDE_PAGE_SIZE))
 #define ALIGNMENT    ((size_t)16)
 #define HDR_SIZE     ((size_t)(2 * sizeof(size_t)))   /* 16 */
 #define MIN_PAYLOAD  ((size_t)ALIGNMENT)
@@ -115,29 +122,17 @@ static void arena_append(unsigned char *start, size_t want) {
     }
 }
 
-static int arena_grow(size_t need) {
-    size_t want = need + HDR_SIZE;
-    if (want < ARENA_CHUNK) want = ARENA_CHUNK;
-    want = align_up(want);
+/* Map the arena once.  Subsequent calls are no-ops after the first
+ * successful or failed attempt.  exyde_map returns page-aligned
+ * memory, so no misalign handling is needed. */
+static int arena_init_once(void) {
+    static int tried = 0;
+    if (tried) return arena_first ? 0 : -1;
+    tried = 1;
 
-    void *prev = sbrk((long)want);
-    if (prev == (void *)-1) return -1;
-
-    unsigned char *start = (unsigned char *)prev;
-
-    if (!arena_first) {
-        size_t misalign = (size_t)((uintptr_t)start & (ALIGNMENT - 1));
-        if (misalign) {
-            size_t pad = ALIGNMENT - misalign;
-            start += pad;
-            want  -= pad;
-        }
-    } else if (start != arena_hi) {
-        /* Another actor moved brk.  We cannot safely chain. */
-        return -1;
-    }
-
-    arena_append(start, want);
+    void *p = exyde_map(NULL, ARENA_PAGES, EXYDE_MAP_WRITE);
+    if (!p) return -1;
+    arena_append((unsigned char *)p, ARENA_SIZE);
     return 0;
 }
 
@@ -147,18 +142,21 @@ void *malloc(size_t size) {
     size_t need = align_up(size);
     if (need < MIN_PAYLOAD) need = MIN_PAYLOAD;
 
-    for (;;) {
-        for (block_t *b = arena_first; b; b = blk_next(b)) {
-            if (!blk_free(b) || blk_size(b) < need) continue;
-            split_block(b, need);
-            return (unsigned char *)b + HDR_SIZE;
-        }
-
-        if (arena_grow(need) < 0) {
+    if (!arena_first) {
+        if (arena_init_once() < 0) {
             errno = ENOMEM;
             return NULL;
         }
     }
+
+    for (block_t *b = arena_first; b; b = blk_next(b)) {
+        if (!blk_free(b) || blk_size(b) < need) continue;
+        split_block(b, need);
+        return (unsigned char *)b + HDR_SIZE;
+    }
+
+    errno = ENOMEM;
+    return NULL;
 }
 
 void free(void *ptr) {

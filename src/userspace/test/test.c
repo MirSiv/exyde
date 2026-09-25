@@ -358,8 +358,8 @@ int main(int argc, char **argv, char **envp) {
 
         /* (11) ENOMEM.
          *
-         * The boundary-tag allocator grows the arena by sbrk() in
-         * 64 KiB chunks, so a single exhausted malloc(64 KiB) can
+         * The allocator uses a fixed 4 MiB mmap-backed arena, so a
+         * single exhausted malloc(64 KiB) can
          * leave large free fragments behind.  Walk the request size
          * down from 64 KiB to 16 so those fragments get consumed
          * too, then setenv's own allocation must fail.

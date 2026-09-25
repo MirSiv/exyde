@@ -16,11 +16,8 @@
  *
  * Phase 11.5.0: this is the microkernel ABI.  See EXYDE.md.
  *
- * The VFS/fd/brk numbers below are TRANSITIONAL.  They keep pre-11.5
- * userspace (init.elf) alive while VFS moves to userspace step by
- * step (see EXYDE_PHASES.md, Phase 11.5).  They are not part of the
- * target microkernel ABI and will be removed in Phase 11.5.6.  Do
- * not write new code against them. */
+ * The transitional VFS / fd / brk numbers of the pre-11.5 era are
+ * retired; they remain reserved and are not reused. */
 
 /* ---- microkernel core (permanent) ------------------------------- */
 
@@ -55,9 +52,9 @@
  * SYS_WRITE. */
 #define SYS_KPUTS          1
 
-/* ---- transitional (remove in 11.5.6c) --------------------------- */
-
-#define SYS_BRK            11
+/* Numbers 6, 7, 8, 9, 11 were transitional VFS / fd / brk syscalls.
+ * They are retired; the numbers remain reserved and must not be
+ * reused. */
 
 #define SYSCALL_MAX        26
 
