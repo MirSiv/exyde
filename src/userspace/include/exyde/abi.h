@@ -50,9 +50,13 @@
 #define SYS_WAIT             24
 #define SYS_GET_BOOTSTRAP    25
 
+/* Kernel console write, no fd, no VFS.  Permanent low-level debug
+ * primitive; the number 1 used to be the transitional fd-based
+ * SYS_WRITE. */
+#define SYS_KPUTS          1
+
 /* ---- transitional: VFS / fd / brk (remove in 11.5.6) ------------ */
 
-#define SYS_WRITE          1
 #define SYS_READ           6
 #define SYS_OPEN           7
 #define SYS_CLOSE          8

@@ -619,13 +619,12 @@ static sysret_t sys_get_bootstrap(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
 /* Transitional: VFS / fd / brk (remove in 11.5.6)                      */
 /* ==================================================================== */
 
-static sysret_t sys_write(u64 fd, u64 buf_u, u64 count, u64 a3, u64 a4) {
-    (void)a3; (void)a4;
+/* SYS_KPUTS: write `count` bytes from user memory to the kernel
+ * console.  No fd, no VFS.  Bounce buffer on the stack, 4 KiB cap. */
+static sysret_t sys_kputs(u64 buf_u, u64 count, u64 a2, u64 a3, u64 a4) {
+    (void)a2; (void)a3; (void)a4;
     process_t *p = current_process();
     if (!p) return SYSRET_ERR(EPERM);
-
-    file_t *f = fd_get(&p->fds, (int)fd);
-    if (!f) return SYSRET_ERR(EBADF);
     if (count == 0) return 0;
     if (count > SYSCALL_IO_MAX) return SYSRET_ERR(EINVAL);
 
@@ -633,9 +632,10 @@ static sysret_t sys_write(u64 fd, u64 buf_u, u64 count, u64 a3, u64 a4) {
     if (copy_from_user(p->space, kbuf, (vaddr_t)buf_u, (size_t)count) < 0)
         return SYSRET_ERR(EFAULT);
 
-    i64 w = vfs_write(f, kbuf, (size_t)count);
-    if (w < 0) return SYSRET_ERR((u64)-w);
-    return (sysret_t)w;
+    for (size_t i = 0; i < (size_t)count; ++i) {
+        console_write_char((char)kbuf[i]);
+    }
+    return (sysret_t)count;
 }
 
 static sysret_t sys_read(u64 fd, u64 buf_u, u64 count, u64 a3, u64 a4) {
@@ -770,7 +770,7 @@ static const syscall_fn_t syscall_table[SYSCALL_MAX] = {
     [SYS_YIELD]         = sys_yield,
 
     /* Transitional, remove in 11.5.6 */
-    [SYS_WRITE]         = sys_write,
+    [SYS_KPUTS]         = sys_kputs,
     [SYS_READ]          = sys_read,
     [SYS_OPEN]          = sys_open,
     [SYS_CLOSE]         = sys_close,

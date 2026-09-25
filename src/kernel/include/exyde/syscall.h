@@ -48,9 +48,15 @@
 #define SYS_WAIT             24  /* (proc_handle)                  -> exit_code */
 #define SYS_GET_BOOTSTRAP    25  /* ()                             -> handle  */
 
+/* Kernel console write, no fd, no VFS.  Used by userspace before a
+ * console server is reachable (bootstrap diagnostics) and as a
+ * permanent low-level debug primitive.  Number 1 previously carried
+ * the transitional fd-based SYS_WRITE, which is being retired in
+ * Phase 11.5.6. */
+#define SYS_KPUTS          1    /* (buf, len)               -> bytes       */
+
 /* ---- transitional: VFS / fd / brk (remove in 11.5.6) --------------- */
 
-#define SYS_WRITE          1
 #define SYS_READ           6
 #define SYS_OPEN           7
 #define SYS_CLOSE          8
