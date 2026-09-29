@@ -19,6 +19,17 @@ void *exy_zalloc(size_t size);
 void *exy_realloc(void *ptr, size_t new_size);
 void  exy_free(void *ptr);
 
+/* Ensure at least `bytes` of payload is available in the free list.
+ * Grows the heap as needed.  Returns true on success. */
+bool heap_reserve(size_t bytes);
+
+/* Payload bytes reserved at boot.  Must cover the largest single
+ * kernel allocation that may occur in normal operation.  The
+ * largest such allocation is SYS_SPAWN_ELF's bounce buffer,
+ * capped at SPAWN_ELF_MAX (4 MiB, see core/syscall.c), plus
+ * slack for process_t / thread_t / name copies along the way. */
+#define HEAP_BOOT_RESERVE  (4u * 1024u * 1024u + 256u * 1024u)
+
 /* Introspection (diagnostics and tests). */
 size_t heap_used_bytes(void);   /* payload bytes currently allocated to callers */
 size_t heap_free_bytes(void);   /* payload bytes in the free list */

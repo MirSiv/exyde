@@ -219,6 +219,13 @@ void *exy_realloc(void *ptr, size_t new_size) {
     return np;
 }
 
+bool heap_reserve(size_t bytes) {
+    if (bytes == 0) return true;
+    size_t have = heap_free_bytes();
+    if (have >= bytes) return true;
+    return heap_grow(bytes - have);
+}
+
 size_t heap_used_bytes(void) {
     return heap_live_payload;
 }

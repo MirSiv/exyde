@@ -31,6 +31,71 @@ static bool map_user_stack(vmm_space_t space, vaddr_t stack_top, u32 pages) {
     return true;
 }
 
+/* Map `size` bytes at INITRD_VA in `space`, read-only (no VM_WRITE).
+ *
+ * The newly mapped pages are only reachable through the target
+ * space's user VAs, so we switch CR3 to `space` for the duration of
+ * the copy and restore the caller's space afterwards.  On any
+ * failure the function unwinds everything it managed to map and
+ * returns false. */
+static bool map_initrd(vmm_space_t space, const void *src, size_t size) {
+    if (!src || size == 0) return true;
+
+    vaddr_t base  = INITRD_VA;
+    size_t  pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    /* The ELF loader has already run by the time we get here; make
+     * sure our range does not collide with anything it placed. */
+    for (size_t i = 0; i < pages; ++i) {
+        paddr_t pa; u32 fl;
+        if (vmm_query(space, base + (vaddr_t)i * PAGE_SIZE, &pa, &fl))
+            return false;
+    }
+
+    vmm_space_t prev = thread_current()->space;
+    bool need_switch = (prev != space);
+    if (need_switch) vmm_switch(space);
+
+    const u8 *ksrc   = (const u8 *)src;
+    size_t    mapped = 0;
+    bool      ok     = true;
+
+    for (size_t i = 0; i < pages; ++i) {
+        paddr_t pa = pmm_alloc_page();
+        if (!pa) { ok = false; break; }
+
+        vaddr_t va = base + (vaddr_t)i * PAGE_SIZE;
+        if (!vmm_map(space, va, pa, VM_PRESENT | VM_USER)) {
+            pmm_free_page(pa);
+            ok = false;
+            break;
+        }
+        ++mapped;
+
+        u8    *udst   = (u8 *)va;
+        size_t off    = i * PAGE_SIZE;
+        size_t remain = (off < size) ? (size - off) : 0;
+        if (remain > PAGE_SIZE) remain = PAGE_SIZE;
+
+        for (size_t j = 0; j < PAGE_SIZE; ++j) udst[j] = 0;
+        for (size_t j = 0; j < remain;    ++j) udst[j] = ksrc[off + j];
+    }
+
+    if (!ok) {
+        for (size_t i = 0; i < mapped; ++i) {
+            vaddr_t va = base + (vaddr_t)i * PAGE_SIZE;
+            paddr_t pa;
+            if (vmm_query(space, va, &pa, (u32 *)0)) {
+                vmm_unmap(space, va);
+                pmm_free_page(pa);
+            }
+        }
+    }
+
+    if (need_switch) vmm_switch(prev);
+    return ok;
+}
+
 /* Copy bytes to a user VA.  The caller must have switched CR3 to
  * `space` for the duration of the build (see exec_build_initial_stack). */
 static bool write_user_bytes(vmm_space_t space, vaddr_t va,
@@ -110,12 +175,23 @@ static void user_thread_entry(void *arg) {
     arch_enter_user_mode(p->entry, p->initial_rsp);
 }
 
-process_t *process_spawn(const char *name,
-                         const void *elf, size_t elf_size,
-                         int argc, const char *const *argv,
-                         int envc, const char *const *envp) {
+/* Shared spawn path.  process_spawn and process_spawn_init are thin
+ * wrappers over this; only the initrd argument differs.  `initrd` may
+ * be NULL, in which case the target space gets no initrd mapping. */
+static process_t *spawn_common(const char *name,
+                               const void *elf, size_t elf_size,
+                               const void *initrd, size_t initrd_size,
+                               int argc, const char *const *argv,
+                               int envc, const char *const *envp) {
     process_t *p = process_create_from_elf(name, elf, elf_size);
     if (!p) return (process_t *)0;
+
+    if (initrd && initrd_size) {
+        if (!map_initrd(p->space, initrd, initrd_size)) {
+            process_destroy(p);
+            return (process_t *)0;
+        }
+    }
 
     vaddr_t stack_top = USER_STACK_TOP_INIT;
     if (!map_user_stack(p->space, stack_top, EXEC_STACK_PAGES)) {
@@ -153,4 +229,21 @@ process_t *process_spawn(const char *name,
         return (process_t *)0;
     }
     return p;
+}
+
+process_t *process_spawn(const char *name,
+                         const void *elf, size_t elf_size,
+                         int argc, const char *const *argv,
+                         int envc, const char *const *envp) {
+    return spawn_common(name, elf, elf_size, (const void *)0, 0,
+                        argc, argv, envc, envp);
+}
+
+process_t *process_spawn_init(const char *name,
+                              const void *elf, size_t elf_size,
+                              const void *initrd, size_t initrd_size,
+                              int argc, const char *const *argv,
+                              int envc, const char *const *envp) {
+    return spawn_common(name, elf, elf_size, initrd, initrd_size,
+                        argc, argv, envc, envp);
 }

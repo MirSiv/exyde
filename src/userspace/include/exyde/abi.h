@@ -42,8 +42,11 @@
 #define SYS_IPC_RECV_CAP     21
 #define SYS_IPC_TRY_RECV_CAP 22
 
-/* Phase 11.5.2: process management from userspace. */
-#define SYS_SPAWN            23
+/* Phase 11.5.2: process management from userspace.
+ *
+ * Number 23 was SYS_SPAWN (spawn from the kernel's embedded ELF
+ * table).  Retired in Phase 11.5.8 when the kernel stopped
+ * carrying an ELF table; reserved and not reused. */
 #define SYS_WAIT             24
 #define SYS_GET_BOOTSTRAP    25
 

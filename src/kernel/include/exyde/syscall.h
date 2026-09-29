@@ -40,24 +40,25 @@
 #define SYS_IPC_RECV_CAP     21  /* (ch, buf, max, out_cap)   -> msg_size   */
 #define SYS_IPC_TRY_RECV_CAP 22  /* (ch, buf, max, out_cap)   -> size/EAGAIN */
 
-/* Phase 11.5.2: process management from userspace. */
-#define SYS_SPAWN            23  /* (name, argv, argc, cap, flags) -> handle */
+/* Phase 11.5.2: process management from userspace.
+ *
+ * Number 23 was SYS_SPAWN (spawn from the kernel's embedded ELF
+ * table).  It was retired in Phase 11.5.8 when the kernel stopped
+ * carrying an ELF table; all spawning now goes through SYS_SPAWN_ELF
+ * below.  The number remains reserved and must not be reused. */
 #define SYS_WAIT             24  /* (proc_handle)                  -> exit_code */
 #define SYS_GET_BOOTSTRAP    25  /* ()                             -> handle  */
 
-/* Phase 11.5.7: spawn from an ELF image supplied by userspace instead
- * of from the kernel's embedded elf_table.  This is the foundation
- * for 11.5.8 (initrd: /bin loaded by init from VFS and handed to
- * the kernel here).  `elf_u` is a user VA holding the whole file;
- * `name_u` is a user VA holding a NUL-terminated label (only used as
- * the process name and argv[0]). */
+/* Phase 11.5.7: spawn from an ELF image supplied by userspace.
+ * `elf_u` is a user VA holding the whole ELF64 static executable;
+ * `name_u` is a user VA holding a NUL-terminated label (only used
+ * as the process name and argv[0]).  This is the only spawn path
+ * after Phase 11.5.8. */
 #define SYS_SPAWN_ELF        26  /* (elf_u, elf_size, name_u, cap, flags) -> handle */
 
-/* Kernel console write, no fd, no VFS.  Used by userspace before a
- * console server is reachable (bootstrap diagnostics) and as a
- * permanent low-level debug primitive.  Number 1 previously carried
- * the transitional fd-based SYS_WRITE, which is being retired in
- * Phase 11.5.6. */
+/* Kernel console write, no fd, no VFS.  Permanent low-level debug
+ * primitive; the number 1 used to carry the transitional fd-based
+ * SYS_WRITE. */
 #define SYS_KPUTS          1    /* (buf, len)               -> bytes       */
 
 /* Numbers 6, 7, 8, 9, 11 were transitional VFS / fd / brk syscalls.

@@ -5,16 +5,17 @@ OBJDIR     := $(BUILD)/obj
 KERNEL     := $(BUILD)/exyde-kernel.elf
 ISO        := $(BUILD)/exyde.iso
 ISODIR     := $(BUILD)/iso
+
 INIT_ELF   := $(BUILD)/init.elf
 TEST_ELF   := $(BUILD)/test.elf
 ECHO_ELF   := $(BUILD)/echo.elf
 VFS_ELF    := $(BUILD)/exy-vfs.elf
 CONS_ELF   := $(BUILD)/console.elf
+
+INITRD     := $(BUILD)/initrd
+
 INIT_OBJ   := $(OBJDIR)/init_elf.o
-TEST_OBJ   := $(OBJDIR)/test_elf.o
-ECHO_OBJ   := $(OBJDIR)/echo_elf.o
-VFS_OBJ    := $(OBJDIR)/vfs_elf.o
-CONS_OBJ   := $(OBJDIR)/console_elf.o
+INITRD_OBJ := $(OBJDIR)/initrd.o
 
 CC      := gcc
 AS      := nasm
@@ -52,7 +53,6 @@ C_SRCS := \
     core/condvar.c \
     core/channel.c \
     core/elf.c \
-    core/elf_table.c \
     core/process.c \
     core/handle.c \
     core/syscall.c \
@@ -83,7 +83,7 @@ ASM_SRCS := \
 
 C_OBJS   := $(patsubst %.c,$(OBJDIR)/%.o,$(C_SRCS))
 ASM_OBJS := $(patsubst %.asm,$(OBJDIR)/%.o,$(ASM_SRCS))
-OBJS     := $(ASM_OBJS) $(C_OBJS) $(INIT_OBJ) $(TEST_OBJ) $(ECHO_OBJ) $(VFS_OBJ) $(CONS_OBJ)
+OBJS     := $(ASM_OBJS) $(C_OBJS) $(INIT_OBJ) $(INITRD_OBJ)
 
 .PHONY: all iso run clean
 
@@ -98,38 +98,26 @@ $(OBJDIR)/%.o: %.asm
 	@mkdir -p $(@D)
 	$(AS) $(ASFLAGS) $< -o $@
 
-# Embed each userspace ELF as a byte array.  objcopy mangles the
-# relative path into stable symbol names, so we always invoke it from
-# the project root:
+# Embed the init ELF and the cpio newc initrd as byte arrays.
+# objcopy mangles the relative path into stable symbol names, so we
+# always invoke it from the project root:
 #     build/init.elf  ->  _binary_build_init_elf_{start,end}
-#     build/test.elf  ->  _binary_build_test_elf_{start,end}
-#     build/echo.elf  ->  _binary_build_echo_elf_{start,end}
+#     build/initrd    ->  _binary_build_initrd_{start,end}
 $(INIT_OBJ): $(INIT_ELF)
 	@mkdir -p $(@D)
 	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
 	    build/init.elf build/obj/init_elf.o
 
-$(TEST_OBJ): $(TEST_ELF)
+$(INITRD_OBJ): $(INITRD)
 	@mkdir -p $(@D)
 	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
-	    build/test.elf build/obj/test_elf.o
+	    build/initrd build/obj/initrd.o
 
-$(ECHO_OBJ): $(ECHO_ELF)
-	@mkdir -p $(@D)
-	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
-	    build/echo.elf build/obj/echo_elf.o
+# The initrd is built from the userspace ELFs.  If any of them is
+# missing, fall back to building userspace first.
+$(INITRD): $(INIT_ELF) $(TEST_ELF) $(ECHO_ELF) $(VFS_ELF) $(CONS_ELF)
+	sh $(ROOT_DIR)/tools/mkinitrd.sh
 
-$(VFS_OBJ): $(VFS_ELF)
-	@mkdir -p $(@D)
-	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
-	    build/exy-vfs.elf build/obj/vfs_elf.o
-
-$(CONS_OBJ): $(CONS_ELF)
-	@mkdir -p $(@D)
-	cd $(ROOT_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
-	    build/console.elf build/obj/console_elf.o
-
-# Fallback: build userspace if any of the ELFs is missing.
 $(INIT_ELF) $(TEST_ELF) $(ECHO_ELF) $(VFS_ELF) $(CONS_ELF):
 	$(MAKE) -C $(ROOT_DIR)/src/userspace
 

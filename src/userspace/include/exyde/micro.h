@@ -86,18 +86,6 @@ int exyde_handle_close(exyde_handle_t h);
 
 /* Process management (Phase 11.5.2) ------------------------------- */
 
-/* Spawn a program from the kernel's embedded ELF table.  `name` is
- * the short name without ".elf" ("init", "test", "echo", ...).  If
- * `cap` is not EXYDE_HANDLE_INVALID, a duplicate of that handle is
- * installed in the child's handle table and returned to the child by
- * exyde_get_bootstrap(); this is how a service and its manager share
- * a channel.
- *
- * Returns a handle on the child process, or EXYDE_HANDLE_INVALID with
- * errno set on failure.  Closing the returned handle releases the
- * parent's reference to the child. */
-exyde_handle_t exyde_spawn(const char *name, exyde_handle_t cap);
-
 /* Phase 11.5.7: spawn from an ELF image held in the caller's address
  * space.  `elf` points at the first byte of a complete ELF64 static
  * executable, `size` is its length in bytes (1 <= size <= 4 MiB).

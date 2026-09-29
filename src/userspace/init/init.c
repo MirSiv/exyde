@@ -23,19 +23,27 @@
 #include <stdio.h>
 #include <errno.h>
 #include <exyde/micro.h>
+#include <exyde/initrd.h>
 #include <exyde/console_client.h>
 #include <exyde/console_rpc.h>
 #include <exyde/vfs_client.h>
 #include <exyde/vfs_rpc.h>
 #include <stdint.h>
 
-/* Embedded by the userspace Makefile via objcopy: build/echo.elf is
- * linked into init.elf under the standard path-mangled names.  See
- * src/userspace/Makefile (INIT_ECHO_BLOB). */
-extern const unsigned char _binary_build_echo_elf_start[];
-extern const unsigned char _binary_build_echo_elf_end[];
-
 static exyde_handle_t g_console_child = EXYDE_HANDLE_INVALID;
+
+/* Spawn a program whose ELF image lives in the kernel-mapped
+ * initrd.  `path` is the archive path (e.g. "bin/echo"); `name`
+ * is the short label the child sees as argv[0] / process name. */
+static exyde_handle_t spawn_from_initrd(const char *path,
+                                        const char *name,
+                                        exyde_handle_t cap) {
+    const void *data; size_t size;
+    if (initrd_find(path, &data, &size) != 0) {
+        return EXYDE_HANDLE_INVALID;
+    }
+    return exyde_spawn_elf(data, size, name, cap);
+}
 
 static int start_console(void) {
     exyde_handle_t ch_req  = exyde_ipc_create(CONSOLE_RPC_MSG_SIZE, 4);
@@ -45,7 +53,7 @@ static int start_console(void) {
         return 1;
     }
 
-    exyde_handle_t child = exyde_spawn("console", ch_req);
+    exyde_handle_t child = spawn_from_initrd("bin/console", "console", ch_req);
     if (child == EXYDE_HANDLE_INVALID) {
         printf("init: FAIL spawn console errno=%d\n", errno);
         exyde_handle_close(ch_req);
@@ -87,7 +95,7 @@ static int run_regression_suite(void) {
         return 1;
     }
 
-    exyde_handle_t child = exyde_spawn("test", ch);
+    exyde_handle_t child = spawn_from_initrd("bin/test", "test", ch);
     if (child == EXYDE_HANDLE_INVALID) {
         printf("init: FAIL spawn test errno=%d\n", errno);
         exyde_handle_close(ch);
@@ -113,7 +121,7 @@ static int run_echo_service(void) {
         return 1;
     }
 
-    exyde_handle_t child = exyde_spawn("echo", ch);
+    exyde_handle_t child = spawn_from_initrd("bin/echo", "echo", ch);
     if (child == EXYDE_HANDLE_INVALID) {
         printf("init: FAIL spawn echo errno=%d\n", errno);
         exyde_handle_close(ch);
@@ -170,7 +178,7 @@ static int run_vfs_test(void) {
         return 1;
     }
 
-    exyde_handle_t child = exyde_spawn("exy-vfs", ch_req);
+    exyde_handle_t child = spawn_from_initrd("bin/exy-vfs", "exy-vfs", ch_req);
     if (child == EXYDE_HANDLE_INVALID) {
         printf("init: FAIL spawn exy-vfs errno=%d\n", errno);
         exyde_handle_close(ch_req);
@@ -302,11 +310,10 @@ fail:
     return 1;
 }
 
-/* Phase 11.5.7: exercise SYS_SPAWN_ELF with an in-memory ELF image.
- * The image is the same echo.elf the kernel's embedded elf_table
- * already exposes; here init hands it back to the kernel from its
- * own address space instead.  This proves the read-ELF-from-user
- * path works end to end. */
+/* Exercise SYS_SPAWN_ELF with an image read back from the initrd.
+ * This is the same code path run_echo_service() uses, exercised a
+ * second time with a different child name to prove the archive
+ * lookup is deterministic and reusable. */
 static int run_spawn_elf_test(void) {
     exyde_handle_t ch = exyde_ipc_create(16, 2);
     if (ch == EXYDE_HANDLE_INVALID) {
@@ -314,13 +321,9 @@ static int run_spawn_elf_test(void) {
         return 1;
     }
 
-    size_t sz = (size_t)(_binary_build_echo_elf_end -
-                         _binary_build_echo_elf_start);
-    exyde_handle_t child = exyde_spawn_elf(_binary_build_echo_elf_start,
-                                           sz, "echo2", ch);
+    exyde_handle_t child = spawn_from_initrd("bin/echo", "echo2", ch);
     if (child == EXYDE_HANDLE_INVALID) {
-        printf("init: FAIL spawn_elf errno=%d size=%lu\n",
-               errno, (unsigned long)sz);
+        printf("init: FAIL spawn_elf errno=%d\n", errno);
         exyde_handle_close(ch);
         return 1;
     }
@@ -367,6 +370,11 @@ int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
     printf("init: service manager starting\n");
+
+    if (initrd_init() != 0) {
+        printf("init: FAIL initrd_init errno=%d\n", errno);
+        return 1;
+    }
 
     if (start_console()        != 0) return 1;
     if (run_regression_suite() != 0) return 1;

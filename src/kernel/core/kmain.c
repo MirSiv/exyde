@@ -22,7 +22,7 @@
 #include <exyde/channel.h>
 #include <exyde/exec.h>
 #include <exyde/init_elf.h>
-#include <exyde/elf_table.h>
+#include <exyde/initrd.h>
 #include <exyde/uaccess.h>
 #include <exyde/uaccess.h>
 
@@ -462,21 +462,50 @@ static void ring3_syscall_selftest(void) {
 }
 
 static void userspace_selftest(void) {
-    const elf_entry_t *init_elf = elf_table_lookup("init");
-    if (!init_elf || !init_elf->blob_start || elf_entry_size(init_elf) == 0)
-        panic("userspace test: no init elf in table");
+    /* Build the env strings the bootstrap init needs.  The kernel
+     * has no snprintf, so hex formatting is done by hand. */
+    char env_initrd_base[48];
+    char env_initrd_size[48];
+    {
+        static const char hex[] = "0123456789abcdef";
+        const char *p1 = "EXYDE_INITRD_BASE=";
+        const char *p2 = "EXYDE_INITRD_SIZE=";
+        size_t l1 = 0; while (p1[l1]) ++l1;
+        size_t l2 = 0; while (p2[l2]) ++l2;
+        for (size_t i = 0; i < l1; ++i) env_initrd_base[i] = p1[i];
+        for (size_t i = 0; i < l2; ++i) env_initrd_size[i] = p2[i];
+
+        u64 bv = (u64)INITRD_VA;
+        u64 sv = (u64)exyde_initrd_size;
+
+        env_initrd_base[l1 + 0] = '0';
+        env_initrd_base[l1 + 1] = 'x';
+        env_initrd_size[l2 + 0] = '0';
+        env_initrd_size[l2 + 1] = 'x';
+        for (int i = 15; i >= 0; --i) {
+            env_initrd_base[l1 + 2 + i] = hex[bv & 0xF]; bv >>= 4;
+        }
+        for (int i = 15; i >= 0; --i) {
+            env_initrd_size[l2 + 2 + i] = hex[sv & 0xF]; sv >>= 4;
+        }
+        env_initrd_base[l1 + 18] = 0;
+        env_initrd_size[l2 + 18] = 0;
+    }
 
     const char *argv[] = { "init", (const char *)0 };
-    const char *envp[] = { "PATH=/", (const char *)0 };
+    const char *envp[] = { "PATH=/", env_initrd_base, env_initrd_size,
+                           (const char *)0 };
     int argc = 1;
-    int envc = 1;
+    int envc = 3;
 
     u64 before = pmm_free_page_count();
 
-    process_t *init = process_spawn("init",
-                                    init_elf->blob_start,
-                                    (size_t)elf_entry_size(init_elf),
-                                    argc, argv, envc, envp);
+    process_t *init = process_spawn_init("init",
+                                         exyde_init_elf,
+                                         (size_t)exyde_init_elf_size,
+                                         exyde_initrd,
+                                         (size_t)exyde_initrd_size,
+                                         argc, argv, envc, envp);
     if (!init) panic("userspace test: spawn init failed");
 
     exy_printf("userspace: spawned init pid=%u, pmm free before=%u\n",
@@ -485,7 +514,8 @@ static void userspace_selftest(void) {
     for (int i = 0; i < 1000; ++i) sched_yield();
 
     u64 after = pmm_free_page_count();
-    exy_printf("userspace: after reaper, pmm free=%u\n", (u32)after);
+    exy_printf("userspace: after reaper, pmm free=%u heap=%u\n",
+            (u32)after, (u32)heap_total_bytes());
 
     if (after < before)
         panic("userspace test: reaper leaked pages");
@@ -560,6 +590,13 @@ void kmain(u32 magic, u64 mb_info_addr) {
     vmm_selftest();
 
     heap_init();
+    /* Pre-grow the kernel heap so that a single SYS_SPAWN_ELF
+     * bounce buffer (up to 4 MiB) can be satisfied without a
+     * heap growth in the middle of userspace execution.  Kernel
+     * heap pages are never returned to the pmm, so doing this
+     * once at boot keeps the pmm free count stable afterwards. */
+    if (!heap_reserve(HEAP_BOOT_RESERVE))
+        panic("heap: boot reservation failed");
     heap_selftest();
 
     handle_selftest();

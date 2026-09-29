@@ -81,19 +81,6 @@ int exyde_handle_close(exyde_handle_t h) {
 
 /* ---- process management ----------------------------------------- */
 
-exyde_handle_t exyde_spawn(const char *name, exyde_handle_t cap) {
-    long r = __exyde_syscall(SYS_SPAWN,
-                             (long)(uintptr_t)name,
-                             0,   /* argv (unused, 11.5.3) */
-                             0,   /* argc must be 0 for now */
-                             cap, 0);
-    if (r < 0 && r > -4096) {
-        errno = (int)-r;
-        return EXYDE_HANDLE_INVALID;
-    }
-    return (exyde_handle_t)r;
-}
-
 exyde_handle_t exyde_spawn_elf(const void *elf, size_t size,
                                const char *name, exyde_handle_t cap) {
     long r = __exyde_syscall(SYS_SPAWN_ELF,

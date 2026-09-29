@@ -11,7 +11,6 @@
 #include <exyde/exec.h>
 #include <exyde/channel.h>
 #include <exyde/arch.h>
-#include <exyde/elf_table.h>
 #include <exyde/heap.h>
 #include <exyde/panic.h>
 
@@ -554,27 +553,6 @@ static sysret_t spawn_with_elf(const char *name,
     return (sysret_t)ph;
 }
 
-/* Spawn a process from the kernel's embedded ELF table. */
-static sysret_t sys_spawn(u64 name_u, u64 argv_u, u64 argc,
-                          u64 cap_h, u64 flags) {
-    (void)argv_u;
-    process_t *parent = current_process();
-    if (!parent) return SYSRET_ERR(EPERM);
-    if (flags != 0) return SYSRET_ERR(EINVAL);
-    if (argc != 0)  return SYSRET_ERR(EINVAL);
-
-    char name[SPAWN_NAME_MAX];
-    int sr = strncpy_from_user(parent->space, name, (vaddr_t)name_u,
-                               sizeof(name));
-    if (sr < 0) return SYSRET_ERR((u64)-sr);
-
-    const elf_entry_t *elf = elf_table_lookup(name);
-    if (!elf || !elf->blob_start || elf_entry_size(elf) == 0)
-        return SYSRET_ERR(ENOENT);
-
-    return spawn_with_elf(name, elf->blob_start,
-                          (size_t)elf_entry_size(elf), cap_h);
-}
 
 /* SYS_SPAWN_ELF: spawn from an ELF image held in a user buffer.
  * This is the foundation for Phase 11.5.8: init will read each
@@ -688,7 +666,6 @@ static const syscall_fn_t syscall_table[SYSCALL_MAX] = {
     [SYS_IPC_SEND_CAP]  = sys_ipc_send_cap,
     [SYS_IPC_RECV_CAP]  = sys_ipc_recv_cap,
     [SYS_IPC_TRY_RECV_CAP] = sys_ipc_try_recv_cap,
-    [SYS_SPAWN]            = sys_spawn,
     [SYS_SPAWN_ELF]        = sys_spawn_elf,
     [SYS_WAIT]             = sys_wait,
     [SYS_GET_BOOTSTRAP]    = sys_get_bootstrap,
