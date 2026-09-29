@@ -28,6 +28,10 @@ void console_write_char(char c) {
     console_write(buf);
 }
 
+int console_read_char(void) {
+    return serial_read_char();
+}
+
 static const char *const sgr_codes[] = {
     "\x1b[0m",   /* RESET          */
     "\x1b[31m",  /* RED            */

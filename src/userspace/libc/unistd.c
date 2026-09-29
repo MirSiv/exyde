@@ -15,10 +15,17 @@ static long posix_ret(long r) {
     return r;
 }
 
-/* fd 0/1/2 are console.  Writes go to the console server if one is
- * wired up, otherwise through SYS_KPUTS (kernel fallback).  Reads of
- * fd 0 need the console server; there is no kernel input path any
- * more.  close/lseek on 0/1/2 are POSIX-style no-op / ESPIPE.
+/* fd 0/1/2 are console.
+ *
+ * Writes go to the console server if one is wired up, otherwise
+ * through SYS_EXY_PUTS (kernel fallback).
+ *
+ * Reads of fd 0 try the console server first; if none is wired up,
+ * fall back to SYS_EXY_GETS (kernel serial input).  SYS_EXY_GETS is
+ * non-blocking, so a caller with no data available sees -1/EAGAIN;
+ * the console server hides that by polling with SYS_YIELD.
+ *
+ * close/lseek on 0/1/2 are POSIX-style no-op / ESPIPE.
  *
  * fd >= 3 route through libvfs to exy-vfs, using the local fd table
  * to translate local fd -> server fd.  open() always goes through
@@ -27,10 +34,13 @@ static long posix_ret(long r) {
 
 ssize_t read(int fd, void *buf, size_t count) {
     if (fd >= 0 && fd < 3) {
-        /* Only stdin is readable.  If a console server is up, ask it;
-         * otherwise there is no source of input in Phase 11.5.6. */
-        if (fd == STDIN_FILENO && console_client_ready()) {
-            return console_client_read(buf, count);
+        if (fd == STDIN_FILENO) {
+            if (console_client_ready()) {
+                return console_client_read(buf, count);
+            }
+            long r = __exyde_syscall(SYS_EXY_GETS, (long)buf,
+                                     (long)count, 0, 0, 0);
+            return (ssize_t)posix_ret(r);
         }
         errno = EBADF;
         return -1;
@@ -44,12 +54,13 @@ ssize_t write(int fd, const void *buf, size_t count) {
     if (fd >= 0 && fd < 3) {
         /* fd 1/2 are console.  Route to the console server if one
          * is up; otherwise fall back to the kernel console via
-         * SYS_KPUTS.  fd 0 is read-only and handled by read(). */
+         * SYS_EXY_PUTS.  fd 0 is read-only and handled by read(). */
         if (fd == STDOUT_FILENO || fd == STDERR_FILENO) {
             if (console_client_ready()) {
                 return console_client_write(buf, count);
             }
-            long r = __exyde_syscall(SYS_KPUTS, (long)buf, (long)count, 0, 0, 0);
+            long r = __exyde_syscall(SYS_EXY_PUTS, (long)buf, (long)count,
+                                     0, 0, 0);
             return (ssize_t)posix_ret(r);
         }
         errno = EBADF;

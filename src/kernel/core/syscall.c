@@ -14,7 +14,7 @@
 #include <exyde/heap.h>
 #include <exyde/panic.h>
 
-/* One-shot kernel bounce buffer for SYS_KPUTS.
+/* One-shot kernel bounce buffer for SYS_EXY_PUTS / SYS_EXY_GETS.
  * Bigger requests are rejected with -EINVAL. */
 #define SYSCALL_IO_MAX  4096u
 
@@ -624,10 +624,11 @@ static sysret_t sys_get_bootstrap(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {
     return (sysret_t)p->bootstrap_handle;
 }
 
-/* SYS_KPUTS: write `count` bytes from user memory to the kernel
+/* SYS_EXY_PUTS: write `count` bytes from user memory to the kernel
  * console.  No fd, no VFS.  Bounce buffer on the stack, 4 KiB cap.
- * Permanent low-level debug primitive. */
-static sysret_t sys_kputs(u64 buf_u, u64 count, u64 a2, u64 a3, u64 a4) {
+ * Permanent low-level debug primitive; renamed from SYS_KPUTS in
+ * Phase 12.0 (the 'k' prefix was a Linux convention). */
+static sysret_t sys_exy_puts(u64 buf_u, u64 count, u64 a2, u64 a3, u64 a4) {
     (void)a2; (void)a3; (void)a4;
     process_t *p = current_process();
     if (!p) return SYSRET_ERR(EPERM);
@@ -642,6 +643,31 @@ static sysret_t sys_kputs(u64 buf_u, u64 count, u64 a2, u64 a3, u64 a4) {
         console_write_char((char)kbuf[i]);
     }
     return (sysret_t)count;
+}
+
+/* SYS_EXY_GETS: non-blocking read of up to `max` bytes from the
+ * kernel console (serial).  Returns the number of bytes copied (>=1)
+ * or -EAGAIN if the RX FIFO is empty.  Paired with SYS_EXY_PUTS;
+ * both are stop-gaps until Phase 13 device servers exist. */
+static sysret_t sys_exy_gets(u64 buf_u, u64 max, u64 a2, u64 a3, u64 a4) {
+    (void)a2; (void)a3; (void)a4;
+    process_t *p = current_process();
+    if (!p) return SYSRET_ERR(EPERM);
+    if (max == 0) return 0;
+    if (max > SYSCALL_IO_MAX) return SYSRET_ERR(EINVAL);
+
+    u8 kbuf[SYSCALL_IO_MAX];
+    size_t got = 0;
+    while (got < (size_t)max) {
+        int c = console_read_char();
+        if (c < 0) break;
+        kbuf[got++] = (u8)c;
+    }
+    if (got == 0) return SYSRET_ERR(EAGAIN);
+
+    if (copy_to_user(p->space, (vaddr_t)buf_u, kbuf, got) < 0)
+        return SYSRET_ERR(EFAULT);
+    return (sysret_t)got;
 }
 
 /* ==================================================================== */
@@ -673,7 +699,8 @@ static const syscall_fn_t syscall_table[SYSCALL_MAX] = {
     [SYS_UNMAP]         = sys_unmap,
     [SYS_YIELD]         = sys_yield,
 
-    [SYS_KPUTS]         = sys_kputs,
+    [SYS_EXY_PUTS]      = sys_exy_puts,
+    [SYS_EXY_GETS]      = sys_exy_gets,
 };
 
 sysret_t syscall_dispatch(u64 nr, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {

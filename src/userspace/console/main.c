@@ -4,9 +4,12 @@
  * must be CONSOLE_OP_ATTACH carrying the reply channel (ch_resp) as
  * a capability.
  *
- * Writes go through the kernel console via the transitional
- * SYS_WRITE (fd 1).  A future Phase 13 will drive the hardware
- * directly once userspace has MMIO/PIO capabilities. */
+ * Writes go through the kernel console via SYS_EXY_PUTS (fd 1 in
+ * this process falls back to it because we never call
+ * console_client_init).  Reads poll the kernel console via fd 0
+ * (SYS_EXY_GETS) with SYS_YIELD between attempts.  Phase 13 will
+ * drive the hardware directly once userspace has PIO/MMIO
+ * capabilities. */
 
 #include <unistd.h>
 #include <stdlib.h>
@@ -38,6 +41,15 @@ static void reply(int ret) {
     exyde_ipc_send(g_resp, reply_buf, CONSOLE_RPC_MSG_SIZE);
 }
 
+static void reply_bytes(const void *buf, uint32_t len) {
+    struct console_rsp *r = (struct console_rsp *)reply_buf;
+    memset(r, 0, sizeof *r);
+    r->ret = (int64_t)len;
+    r->len = len;
+    if (len) memcpy(r->data, buf, len);
+    exyde_ipc_send(g_resp, reply_buf, CONSOLE_RPC_MSG_SIZE);
+}
+
 static void handle(const struct console_req *q) {
     switch (q->op) {
     case CONSOLE_OP_WRITE:
@@ -48,13 +60,36 @@ static void handle(const struct console_req *q) {
         kwrite(q->data, q->len);
         reply((int)q->len);
         break;
-    case CONSOLE_OP_READ:
-        /* No keyboard driver yet.  Return 0 (EOF) immediately. */
-        reply(0);
+
+    case CONSOLE_OP_READ: {
+        uint32_t want = q->len;
+        if (want > CONSOLE_RPC_DATA_MAX) want = CONSOLE_RPC_DATA_MAX;
+        if (want == 0) { reply(0); break; }
+
+        /* read(0) here falls back to SYS_EXY_GETS because this
+         * process never calls console_client_init.  It is
+         * non-blocking, so we poll with a yield until at least one
+         * byte is available.  Blocking here is deliberate: the
+         * console server is the single component responsible for
+         * waiting on hardware, so clients get POSIX-style blocking
+         * read(). */
+        static uint8_t tmp[CONSOLE_RPC_DATA_MAX];
+        size_t got = 0;
+        for (;;) {
+            ssize_t r = read(0, tmp, want);
+            if (r > 0) { got = (size_t)r; break; }
+            if (r == 0) { reply(0); return; }  /* EOF */
+            if (errno != EAGAIN) { reply(-(int)errno); return; }
+            exyde_yield();
+        }
+        reply_bytes(tmp, (uint32_t)got);
         break;
+    }
+
     case CONSOLE_OP_SHUTDOWN:
         reply(0);
         _exit(0);
+
     default:
         reply(-(int)ENOSYS);
     }

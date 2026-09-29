@@ -25,6 +25,11 @@ void console_write(const char *s);
 void console_write_char(char c);
 void console_write_hex(u64 v);
 
+/* Non-blocking console read.  Returns 0..255 if a byte is available,
+ * or -1 if not.  Backed by the arch console (serial) for now; the
+ * Phase 13 device-server rewrite will replace this. */
+int console_read_char(void);
+
 void console_set_color(console_color_t c);
 void console_reset_color(void);
 

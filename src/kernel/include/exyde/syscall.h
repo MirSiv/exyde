@@ -56,16 +56,25 @@
  * after Phase 11.5.8. */
 #define SYS_SPAWN_ELF        26  /* (elf_u, elf_size, name_u, cap, flags) -> handle */
 
-/* Kernel console write, no fd, no VFS.  Permanent low-level debug
- * primitive; the number 1 used to carry the transitional fd-based
- * SYS_WRITE. */
-#define SYS_KPUTS          1    /* (buf, len)               -> bytes       */
+/* Kernel console I/O, no fd, no VFS.  Stop-gap primitives until
+ * Phase 13 (device servers).  Number 1 used to carry the transitional
+ * fd-based SYS_WRITE.
+ *
+ * Phase 12.0: renamed from SYS_KPUTS.  The 'k' prefix is a Linux
+ * convention that does not belong in the Exyde namespace; the
+ * kernel-side helper prefix is already `exy_` (pending refactor).
+ * SYS_EXY_GETS is non-blocking: it returns whatever is currently
+ * in the UART RX FIFO (1..max bytes) or -EAGAIN if nothing is
+ * available.  Blocking input is a userspace concern (the console
+ * server polls with SYS_YIELD). */
+#define SYS_EXY_PUTS          1  /* (buf, len)               -> bytes       */
+#define SYS_EXY_GETS         27  /* (buf, max)               -> bytes / -EAGAIN */
 
 /* Numbers 6, 7, 8, 9, 11 were transitional VFS / fd / brk syscalls.
  * They are retired; the numbers remain reserved and must not be
  * reused. */
 
-#define SYSCALL_MAX        27
+#define SYSCALL_MAX        28
 
 /* Called from the arch syscall entry (ring 0, on the current thread's
  * kernel stack, IF enabled).  Returns a signed value: >=0 success,
