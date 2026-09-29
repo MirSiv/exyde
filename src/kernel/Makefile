@@ -132,7 +132,7 @@ $(ISO): $(KERNEL)
 	grub-mkrescue -o $(ISO) $(ISODIR)
 
 run: $(ISO)
-	qemu-system-x86_64 -accel kvm -cdrom $(ISO) -serial stdio -m 512 -no-reboot
+	qemu-system-x86_64 -accel kvm -cdrom $(ISO) -serial stdio -display none -monitor none -m 512 -no-reboot
 
 clean:
 	rm -rf $(BUILD)

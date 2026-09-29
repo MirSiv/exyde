@@ -12,7 +12,7 @@ STAGE="$BUILD/initrd-stage"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/bin"
 
-for prog in test echo exy-vfs console; do
+for prog in test echo exy-vfs console exshell; do
     src="$BUILD/$prog.elf"
     [ -f "$src" ] || { echo "mkinitrd: missing $src" >&2; exit 1; }
     cp "$src" "$STAGE/bin/$prog"

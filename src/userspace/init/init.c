@@ -12,7 +12,11 @@
  *   3. Spawn "exy-vfs" and exercise the POSIX layer over libvfs.
  *   4. Phase 11.5.7: exercise exyde_spawn_elf() by spawning an
  *      embedded copy of echo.elf straight from init's address space.
- *   5. Exit 0.
+ *   5. Phase 12.1: spawn exshell from the initrd and wait for it.
+ *      exshell is interactive: it reads lines from stdin until the
+ *      user types "quit" or "exit".  While it runs, the user gets
+ *      a prompt on the serial console.
+ *   6. Shut the console server down cleanly and exit 0.
  *
  * This is deliberately thin.  Everything that was init's test suite
  * moved to test.elf. */
@@ -366,6 +370,32 @@ fail:
     return 1;
 }
 
+/* Phase 12.1: run the interactive shell.  exshell has no bootstrap
+ * capability: it does not talk to the console server, it uses the
+ * kernel console directly (SYS_EXY_PUTS / SYS_EXY_GETS through
+ * libc's fallback path).  Wiring exshell to the console server is
+ * a later substep. */
+static int run_shell(void) {
+    printf("init: starting exshell\n");
+
+    exyde_handle_t child = spawn_from_initrd("bin/exshell", "exshell",
+                                             EXYDE_HANDLE_INVALID);
+    if (child == EXYDE_HANDLE_INVALID) {
+        printf("init: FAIL spawn exshell errno=%d\n", errno);
+        return 1;
+    }
+
+    int code = exyde_wait(child);
+    exyde_handle_close(child);
+
+    if (code != 0) {
+        printf("init: FAIL exshell exit code %d\n", code);
+        return 1;
+    }
+    printf("init: exshell exited\n");
+    return 0;
+}
+
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
@@ -383,6 +413,10 @@ int main(int argc, char **argv, char **envp) {
     if (run_spawn_elf_test()   != 0) return 1;
 
     printf("init: all services OK\n");
+
+    /* Interactive REPL.  Blocks until the user types "quit"/"exit"
+     * or stdin hits EOF. */
+    if (run_shell()            != 0) return 1;
 
     /* Shut down the console server last, and wait for it to actually
      * exit, so that when init's process teardown closes the request

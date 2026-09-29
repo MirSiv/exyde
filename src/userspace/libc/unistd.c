@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <exyde/abi.h>
+#include <exyde/micro.h>
 #include <exyde/vfs_client.h>
 #include <exyde/console_client.h>
 #include "internal/syscall.h"
@@ -21,9 +22,10 @@ static long posix_ret(long r) {
  * through SYS_EXY_PUTS (kernel fallback).
  *
  * Reads of fd 0 try the console server first; if none is wired up,
- * fall back to SYS_EXY_GETS (kernel serial input).  SYS_EXY_GETS is
- * non-blocking, so a caller with no data available sees -1/EAGAIN;
- * the console server hides that by polling with SYS_YIELD.
+ * fall back to SYS_EXY_GETS (kernel serial input) in a poll+yield
+ * loop.  SYS_EXY_GETS itself is non-blocking, but read(0) is POSIX
+ * and must block until a byte is available, so the loop hides the
+ * non-blocking primitive behind the blocking contract.
  *
  * close/lseek on 0/1/2 are POSIX-style no-op / ESPIPE.
  *
@@ -38,9 +40,14 @@ ssize_t read(int fd, void *buf, size_t count) {
             if (console_client_ready()) {
                 return console_client_read(buf, count);
             }
-            long r = __exyde_syscall(SYS_EXY_GETS, (long)buf,
-                                     (long)count, 0, 0, 0);
-            return (ssize_t)posix_ret(r);
+            if (count == 0) return 0;
+            for (;;) {
+                long r = __exyde_syscall(SYS_EXY_GETS, (long)buf,
+                                         (long)count, 0, 0, 0);
+                if (r > 0) return (ssize_t)r;
+                if (r != -(long)EAGAIN) return (ssize_t)posix_ret(r);
+                exyde_yield();
+            }
         }
         errno = EBADF;
         return -1;
