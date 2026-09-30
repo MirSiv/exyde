@@ -645,6 +645,27 @@ static sysret_t sys_exy_puts(u64 buf_u, u64 count, u64 a2, u64 a3, u64 a4) {
     return (sysret_t)count;
 }
 
+/* SYS_PROC_LIST: copy a snapshot of every process into a user
+ * buffer.  Diagnostics primitive (Phase 12.4); no visibility
+ * filtering yet. */
+#define PROC_LIST_MAX 64
+
+static sysret_t sys_proc_list(u64 buf_u, u64 max, u64 a2, u64 a3, u64 a4) {
+    (void)a2; (void)a3; (void)a4;
+    process_t *p = current_process();
+    if (!p) return SYSRET_ERR(EPERM);
+    if (max == 0 || max > PROC_LIST_MAX) return SYSRET_ERR(EINVAL);
+
+    process_info_t kbuf[PROC_LIST_MAX];
+    size_t n = process_collect(kbuf, (size_t)max);
+    if (n == 0) return 0;
+
+    size_t bytes = n * sizeof(process_info_t);
+    if (copy_to_user(p->space, (vaddr_t)buf_u, kbuf, bytes) < 0)
+        return SYSRET_ERR(EFAULT);
+    return (sysret_t)n;
+}
+
 /* SYS_EXY_GETS: non-blocking read of up to `max` bytes from the
  * kernel console (serial).  Returns the number of bytes copied (>=1)
  * or -EAGAIN if the RX FIFO is empty.  Paired with SYS_EXY_PUTS;
@@ -701,6 +722,7 @@ static const syscall_fn_t syscall_table[SYSCALL_MAX] = {
 
     [SYS_EXY_PUTS]      = sys_exy_puts,
     [SYS_EXY_GETS]      = sys_exy_gets,
+    [SYS_PROC_LIST]     = sys_proc_list,
 };
 
 sysret_t syscall_dispatch(u64 nr, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4) {

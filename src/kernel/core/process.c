@@ -11,6 +11,10 @@
 
 static u64 next_pid = 1;
 
+/* Global process list, newest first.  Protected by IRQ-off blocks
+ * (single CPU until Phase 19 SMP). */
+static process_t *proc_list_head = (process_t *)0;
+
 static void handle_release(u32 kind, void *object) {
     if (kind == HANDLE_KIND_CHANNEL) {
         channel_destroy((channel_t *)object);
@@ -65,6 +69,14 @@ process_t *process_create_from_elf(const char *name,
     handle_table_init(&p->handles, handle_release);
     waitq_init(&p->waiters);
 
+    /* Publish to the global list. */
+    {
+        u64 flags = arch_irqs_save_and_disable();
+        p->list_next = proc_list_head;
+        proc_list_head = p;
+        arch_irqs_restore(flags);
+    }
+
     return p;
 }
 
@@ -96,8 +108,44 @@ void process_exit(process_t *p, int code) {
 
 void process_destroy(process_t *p) {
     if (!p) return;
+
+    /* Unlink from the global list first, under IRQs off. */
+    {
+        u64 flags = arch_irqs_save_and_disable();
+        process_t **pp = &proc_list_head;
+        while (*pp && *pp != p) pp = &(*pp)->list_next;
+        if (*pp == p) *pp = p->list_next;
+        arch_irqs_restore(flags);
+    }
+
     handle_table_destroy(&p->handles);
     vmm_space_unref(p->space);
     if (p->name) exy_free((void *)p->name);
     exy_free(p);
+}
+
+size_t process_collect(process_info_t *out, size_t max) {
+    if (!out || max == 0) return 0;
+
+    u64 flags = arch_irqs_save_and_disable();
+
+    size_t n = 0;
+    for (process_t *p = proc_list_head; p && n < max; p = p->list_next) {
+        out[n].pid   = p->pid;
+        out[n].state = p->exited ? 1u : 0u;
+        out[n]._pad  = 0;
+
+        size_t i = 0;
+        if (p->name) {
+            while (i < sizeof(out[n].name) - 1 && p->name[i]) {
+                out[n].name[i] = p->name[i];
+                ++i;
+            }
+        }
+        out[n].name[i] = '\0';
+        ++n;
+    }
+
+    arch_irqs_restore(flags);
+    return n;
 }

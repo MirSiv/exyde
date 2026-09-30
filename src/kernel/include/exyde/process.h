@@ -32,6 +32,11 @@ typedef struct process {
     u8             _pad[3];
     handle_t       bootstrap_handle;
     waitq_t        waiters;
+
+    /* Global process list (Phase 12.4).  Managed by process.c under
+     * IRQs off.  Used by SYS_PROC_LIST for diagnostics; visibility
+     * rules are Phase 18. */
+    struct process *list_next;
 } process_t;
 
 process_t *process_create_from_elf(const char *name,
@@ -40,5 +45,21 @@ void process_unref(process_t *p);
 void process_ref(process_t *p);
 void process_exit(process_t *p, int code);
 void process_destroy(process_t *p);
+
+/* Snapshot record produced by process_collect().  Layout is a wire
+ * format shared with userspace (see userspace/include/exyde/micro.h);
+ * keep them in sync. */
+typedef struct {
+    u64  pid;
+    u32  state;   /* 0 = running, 1 = exited */
+    u32  _pad;
+    char name[32];
+} process_info_t;
+
+/* Fill up to `max` entries with a snapshot of every process in the
+ * system.  Returns the number written.  Disables IRQs internally;
+ * callers do not need to.  Does not take references -- the snapshot
+ * is informational only. */
+size_t process_collect(process_info_t *out, size_t max);
 
 #endif /* EXYDE_PROCESS_H */

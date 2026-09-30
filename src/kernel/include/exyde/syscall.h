@@ -70,11 +70,16 @@
 #define SYS_EXY_PUTS          1  /* (buf, len)               -> bytes       */
 #define SYS_EXY_GETS         27  /* (buf, max)               -> bytes / -EAGAIN */
 
+/* Phase 12.4: enumerate processes.  Fills up to `max` fixed-size
+ * records (process_info_t) and returns the count.  Diagnostics
+ * only; no capability check.  Phase 18 adds visibility rules. */
+#define SYS_PROC_LIST        28  /* (buf, max)               -> count       */
+
 /* Numbers 6, 7, 8, 9, 11 were transitional VFS / fd / brk syscalls.
  * They are retired; the numbers remain reserved and must not be
  * reused. */
 
-#define SYSCALL_MAX        28
+#define SYSCALL_MAX        29
 
 /* Called from the arch syscall entry (ring 0, on the current thread's
  * kernel stack, IF enabled).  Returns a signed value: >=0 success,

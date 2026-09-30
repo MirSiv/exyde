@@ -59,12 +59,13 @@
  * (the 'k' prefix was a Linux convention). */
 #define SYS_EXY_PUTS          1
 #define SYS_EXY_GETS         27
+#define SYS_PROC_LIST        28
 
 /* Numbers 6, 7, 8, 9, 11 were transitional VFS / fd / brk syscalls.
  * They are retired; the numbers remain reserved and must not be
  * reused. */
 
-#define SYSCALL_MAX        28
+#define SYSCALL_MAX        29
 
 /* ---- errno values ----------------------------------------------- */
 /* Linux-compatible, so Phase 17 translation is trivial. */

@@ -134,3 +134,9 @@ int exyde_yield(void) {
     long r = __exyde_syscall(SYS_YIELD, 0, 0, 0, 0, 0);
     return (int)chk(r);
 }
+
+int exyde_proc_list(struct exyde_proc_info *out, unsigned int max) {
+    long r = __exyde_syscall(SYS_PROC_LIST, (long)out, (long)max, 0, 0, 0);
+    if (r < 0 && r > -4096) { errno = (int)-r; return -1; }
+    return (int)r;
+}

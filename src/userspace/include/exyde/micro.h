@@ -2,6 +2,7 @@
 #define EXYDE_USERSPACE_MICRO_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 /* Exyde-native (microkernel) userspace API.  This is not POSIX; it is
  * the direct surface over the kernel ABI for capabilities, IPC, and
@@ -121,5 +122,21 @@ int exyde_unmap(void *vaddr, unsigned int npages);
 
 /* Yield the CPU.  Return 0. */
 int exyde_yield(void);
+
+/* ---- Process enumeration (Phase 12.4) --------------------------- */
+
+/* Wire format for SYS_PROC_LIST.  Layout must match the kernel's
+ * process_info_t (src/kernel/include/exyde/process.h).  state:
+ * 0 = running, 1 = exited. */
+struct exyde_proc_info {
+    uint64_t pid;
+    uint32_t state;
+    uint32_t _pad;
+    char     name[32];
+};
+
+/* Snapshot up to `max` processes into `out`.  Returns the number of
+ * records written (>=0) or -1 with errno set. */
+int exyde_proc_list(struct exyde_proc_info *out, unsigned int max);
 
 #endif /* EXYDE_USERSPACE_MICRO_H */

@@ -1,4 +1,4 @@
-/* exshell -- Exyde shell, Phase 12.3b.
+/* exshell -- Exyde shell, Phase 12.4.
  *
  * Non-interactive build: stdin still does not work reliably from a
  * WSL tty via QEMU -serial stdio (see EXYDE_PHASES.md 12.1), so
@@ -134,7 +134,7 @@ static int builtin_echo(int argc, char **argv) {
 
 static int builtin_version(int argc, char **argv) {
     (void)argc; (void)argv;
-    out("exshell 0.1, Phase 12.3b\n");
+    out("exshell 0.1, Phase 12.4\n");
     return 0;
 }
 
@@ -292,6 +292,26 @@ static int builtin_touch(int argc, char **argv) {
     return 0;
 }
 
+static int builtin_ps(int argc, char **argv) {
+    (void)argc; (void)argv;
+    struct exyde_proc_info info[64];
+    int n = exyde_proc_list(info, 64);
+    if (n < 0) {
+        out("ps: "); out(strerror(errno)); nl();
+        return 1;
+    }
+    out("  PID  STATE  NAME\n");
+    for (int i = 0; i < n; ++i) {
+        char line[96];
+        snprintf(line, sizeof line, "  %-4llu %-6s %s\n",
+                 (unsigned long long)info[i].pid,
+                 info[i].state ? "exit" : "run",
+                 info[i].name);
+        out(line);
+    }
+    return 0;
+}
+
 /* ---- builtin table ----------------------------------------------- */
 
 static const struct builtin builtins[] = {
@@ -304,6 +324,7 @@ static const struct builtin builtins[] = {
     { "touch",   "create empty file",                   builtin_touch   },
     { "rm",      "remove file",                         builtin_rm      },
     { "rmdir",   "remove empty directory",              builtin_rmdir   },
+    { "ps",      "list processes",                      builtin_ps      },
     { "help",    "list builtins, or 'help <name>'",     builtin_help    },
     { "version", "print shell version",                 builtin_version },
 };
@@ -455,6 +476,7 @@ static const char *const script[] = {
     "cd /",
     "rmdir /tmp",
     "pwd",
+    "ps",
     "echo unknown-cmd",
     "quit",
     (const char *)0,
@@ -463,7 +485,7 @@ static const char *const script[] = {
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
-    out("exshell 0.1 (non-interactive build, Phase 12.3b)\n");
+    out("exshell 0.1 (non-interactive build, Phase 12.4)\n");
     out("type 'help' for the builtin list\n");
 
     /* Attach to the VFS server that init started.  If there is no
