@@ -1,4 +1,4 @@
-/* exshell -- Exyde shell, Phase 12.4.
+/* exshell -- Exyde shell, Phase 12.5.
  *
  * Non-interactive build: stdin still does not work reliably from a
  * WSL tty via QEMU -serial stdio (see EXYDE_PHASES.md 12.1), so
@@ -18,9 +18,20 @@
  * editor).  Relative paths are resolved against the shell's own
  * cwd; there is no chdir syscall, the cwd lives in userspace and
  * every VFS request carries an absolute path.  The kernel knows
- * nothing about it. */
+ * nothing about it.
+ *
+ * 12.5 adds environment builtins on top of libc/env.c:
+ *
+ *   env         print all NAME=VALUE pairs
+ *   printenv    print one variable (or everything if no arg)
+ *   export      setenv(name, value, overwrite=1); accepts NAME=VALUE
+ *   unset       unsetenv(name)
+ *
+ * All userspace; libc/env.c owns the array and the ownership rules
+ * for strings that came from the initial envp. */
 
 #include <unistd.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
@@ -134,7 +145,7 @@ static int builtin_echo(int argc, char **argv) {
 
 static int builtin_version(int argc, char **argv) {
     (void)argc; (void)argv;
-    out("exshell 0.1, Phase 12.4\n");
+    out("exshell 0.1, Phase 12.5\n");
     return 0;
 }
 
@@ -312,6 +323,69 @@ static int builtin_ps(int argc, char **argv) {
     return 0;
 }
 
+/* ---- builtins: environment --------------------------------------- */
+
+static int builtin_env(int argc, char **argv) {
+    (void)argc; (void)argv;
+    if (!environ) return 0;
+    for (char **e = environ; *e; ++e) {
+        out(*e);
+        nl();
+    }
+    return 0;
+}
+
+static int builtin_printenv(int argc, char **argv) {
+    if (argc < 2) return builtin_env(0, (char **)0);
+    const char *v = getenv(argv[1]);
+    if (!v) return 1;
+    out(v);
+    nl();
+    return 0;
+}
+
+static int builtin_export(int argc, char **argv) {
+    if (argc < 2) { out("export: missing argument\n"); return 1; }
+    for (int i = 1; i < argc; ++i) {
+        const char *eq = strchr(argv[i], '=');
+        if (!eq) {
+            /* `export NAME` without '=' is POSIX shorthand for
+             * "mark an existing variable for export".  No separate
+             * export table yet -- just report if it is not set. */
+            if (!getenv(argv[i])) {
+                out("export: "); out(argv[i]); out(": not set\n");
+            }
+            continue;
+        }
+        size_t nlen = (size_t)(eq - argv[i]);
+        if (nlen == 0 || nlen >= 128) {
+            out("export: invalid name\n");
+            return 1;
+        }
+        char name[128];
+        memcpy(name, argv[i], nlen);
+        name[nlen] = '\0';
+        if (setenv(name, eq + 1, 1) != 0) {
+            out("export: "); out(name); out(": ");
+            out(strerror(errno)); nl();
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int builtin_unset(int argc, char **argv) {
+    if (argc < 2) { out("unset: missing argument\n"); return 1; }
+    for (int i = 1; i < argc; ++i) {
+        if (unsetenv(argv[i]) != 0) {
+            out("unset: "); out(argv[i]); out(": ");
+            out(strerror(errno)); nl();
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ---- builtin table ----------------------------------------------- */
 
 static const struct builtin builtins[] = {
@@ -325,6 +399,10 @@ static const struct builtin builtins[] = {
     { "rm",      "remove file",                         builtin_rm      },
     { "rmdir",   "remove empty directory",              builtin_rmdir   },
     { "ps",      "list processes",                      builtin_ps      },
+    { "env",     "print all environment variables",     builtin_env     },
+    { "printenv","print one environment variable",      builtin_printenv},
+    { "export",  "set an environment variable",         builtin_export  },
+    { "unset",   "remove an environment variable",      builtin_unset   },
     { "help",    "list builtins, or 'help <name>'",     builtin_help    },
     { "version", "print shell version",                 builtin_version },
 };
@@ -476,6 +554,13 @@ static const char *const script[] = {
     "cd /",
     "rmdir /tmp",
     "pwd",
+    "env",
+    "printenv PATH",
+    "export EXYDE_TEST=hello",
+    "printenv EXYDE_TEST",
+    "unset EXYDE_TEST",
+    "printenv EXYDE_TEST",
+    "echo env tests done",
     "ps",
     "echo unknown-cmd",
     "quit",
@@ -485,7 +570,7 @@ static const char *const script[] = {
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
-    out("exshell 0.1 (non-interactive build, Phase 12.4)\n");
+    out("exshell 0.1 (non-interactive build, Phase 12.5)\n");
     out("type 'help' for the builtin list\n");
 
     /* Attach to the VFS server that init started.  If there is no
