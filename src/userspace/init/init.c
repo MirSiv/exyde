@@ -357,6 +357,61 @@ fail:
     return 1;
 }
 
+/* Phase 12.6: initrd is a boot-time source, RAMFS is the store.
+ * Copy each program from initrd's bin/ into /bin/ in RAMFS so
+ * later processes can run them by path via the VFS.  Runs after
+ * run_vfs_test() (VFS is up) and before run_shell().
+ *
+ * One write() per file: libvfs splits the ELF into 512-byte RPC
+ * chunks internally, so the caller does not have to. */
+static int unpack_initrd_to_ramfs(void) {
+    static const char *const names[] = {
+        "test", "echo", "exy-vfs", "console", "exshell",
+        (const char *)0
+    };
+
+    if (vfs_client_mkdir("/bin", 0755) != 0 && errno != EEXIST) {
+        printf("init: FAIL mkdir /bin: errno=%d\n", errno);
+        return 1;
+    }
+
+    for (int i = 0; names[i]; ++i) {
+        char initrd_path[64];
+        char fs_path[64];
+        snprintf(initrd_path, sizeof initrd_path, "bin/%s", names[i]);
+        snprintf(fs_path,     sizeof fs_path,     "/bin/%s", names[i]);
+
+        const void *data = (const void *)0;
+        size_t size = 0;
+        if (initrd_find(initrd_path, &data, &size) != 0) {
+            printf("init: FAIL initrd_find(%s): errno=%d\n",
+                   initrd_path, errno);
+            return 1;
+        }
+
+        int fd = open(fs_path,
+                      0x0102 /* O_CREAT|O_WRONLY */ |
+                      0x0400 /* O_TRUNC */, 0644);
+        if (fd < 0) {
+            printf("init: FAIL open(%s): errno=%d\n", fs_path, errno);
+            return 1;
+        }
+
+        ssize_t w = write(fd, data, size);
+        close(fd);
+        if (w != (ssize_t)size) {
+            printf("init: FAIL write(%s): %ld/%u errno=%d\n",
+                   fs_path, (long)w, (unsigned)size, errno);
+            return 1;
+        }
+
+        printf("init: unpacked /bin/%s (%u bytes)\n",
+               names[i], (unsigned)size);
+    }
+
+    return 0;
+}
+
 /* Phase 12.1: run the interactive shell.  exshell has no bootstrap
  * capability: it does not talk to the console server, it uses the
  * kernel console directly (SYS_EXY_PUTS / SYS_EXY_GETS through
@@ -400,6 +455,10 @@ int main(int argc, char **argv, char **envp) {
     if (run_spawn_elf_test()   != 0) return 1;
 
     printf("init: all services OK\n");
+
+    /* 12.6: seed RAMFS with the userspace programs so exshell can
+     * run them by path. */
+    if (unpack_initrd_to_ramfs() != 0) return 1;
 
     /* Interactive REPL.  Blocks until the user types "quit"/"exit"
      * or stdin hits EOF. */

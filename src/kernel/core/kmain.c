@@ -626,7 +626,20 @@ void kmain(u32 magic, u64 mb_info_addr) {
 
     console_notice("idle: entering hlt loop\n");
 
+    /* Idle loop: yield whenever another thread is ready, hlt only
+     * when there is nothing to run.  Without the yield, the boot
+     * thread sits in hlt for a full SCHED_QUANTUM_TICKS (5 ticks,
+     * 50 ms at 100 Hz) before preemption lets another thread run.
+     * That turned every IPC round-trip into a ~50 ms stall whenever
+     * the idle thread was scheduled between a client's block and
+     * the server's wake -- exactly the pattern in RPC (send, then
+     * recv), so the initrd unpack in 12.6 went from seconds to
+     * minutes. */
     for (;;) {
-        __asm__ volatile("hlt");
+        if (sched_ready_count() > 0) {
+            sched_yield();
+        } else {
+            __asm__ volatile("hlt");
+        }
     }
 }

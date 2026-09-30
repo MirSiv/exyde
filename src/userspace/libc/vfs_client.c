@@ -135,14 +135,28 @@ long vfs_client_read(int fd, void *buf, size_t len) {
 
 long vfs_client_write(int fd, const void *buf, size_t len) {
     if (ensure_init() != 0) return -1;
+    if (len == 0) return 0;
 
-    if (len == 0 || len > VFS_RPC_DATA_MAX) { errno = EINVAL; return -1; }
-    struct vfs_req q; memset(&q, 0, sizeof q);
-    q.op = VFS_OP_WRITE; q.fd = (uint32_t)fd; q.data_len = (uint32_t)len;
-    memcpy(q.data, buf, len);
-    struct vfs_rsp r;
-    if (rpc(&q, &r) != 0) return -1;
-    return (long)r.ret;
+    /* One RPC per 512 bytes; split larger requests internally so
+     * callers can write() a whole file in one call. */
+    const uint8_t *p = (const uint8_t *)buf;
+    size_t total = 0;
+    while (total < len) {
+        size_t chunk = len - total;
+        if (chunk > VFS_RPC_DATA_MAX) chunk = VFS_RPC_DATA_MAX;
+
+        struct vfs_req q; memset(&q, 0, sizeof q);
+        q.op = VFS_OP_WRITE;
+        q.fd = (uint32_t)fd;
+        q.data_len = (uint32_t)chunk;
+        memcpy(q.data, p + total, chunk);
+
+        struct vfs_rsp r;
+        if (rpc(&q, &r) != 0) return -1;
+        if (r.ret <= 0) { errno = EIO; return -1; }
+        total += (size_t)r.ret;
+    }
+    return (long)total;
 }
 
 long vfs_client_seek(int fd, long off, int whence) {

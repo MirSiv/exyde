@@ -9,9 +9,15 @@
 /* write(1)-backed stdio.
  *
  * Phase 11.3.0: the formatter was extracted into format_core(), which
- * writes characters through a tiny `struct out` sink.  printf/vprintf
- * use an fd sink (one byte per write(2), no buffering).  snprintf/
+ * writes characters through a tiny `struct out` sink.  snprintf/
  * vsnprintf/sprintf/vsprintf use a bounded buffer sink.
+ *
+ * Phase 12.6: the fd sink is buffered.  Before that printf(1) did
+ * one write(2) per byte, which -- through the console-server RPC --
+ * is one IPC round-trip per character.  init's initrd unpack
+ * printed thousands of characters, taking seconds.  The fd sink
+ * now accumulates into a 512-byte buffer and flushes on newline,
+ * on buffer-full, and at the end of every printf.
  *
  * Still missing (deliberately):
  *   - floating point (%f %e %g): needs a soft-float formatter, and
@@ -63,11 +69,38 @@ static int out_repeat(struct out *o, int c, int n) {
     return 0;
 }
 
-/* fd sink: one byte per write(2), matching the pre-11.3.0 printf. */
+/* Buffered fd sink.  Accumulates into fd_buf and flushes on newline,
+ * on buffer-full, and at the end of vprintf().  Errors are sticky
+ * within one printf call and reset at the start of the next.
+ *
+ * Interaction with direct write(fd, ...): the buffer is flushed at
+ * the end of vprintf, so printf("foo") followed by write(1, "bar",3)
+ * prints "foobar", not "barfoo".  No existing caller interleaves a
+ * raw write inside a single printf line. */
+#define FD_BUF_SZ 512
+static char   fd_buf[FD_BUF_SZ];
+static size_t fd_buf_n;
+static int    fd_buf_err;
+
+static int fd_flush(int fd) {
+    if (fd_buf_n == 0) return fd_buf_err ? -1 : 0;
+    size_t want = fd_buf_n;
+    ssize_t w = write(fd, fd_buf, want);
+    fd_buf_n = 0;
+    if (w != (ssize_t)want) { fd_buf_err = 1; return -1; }
+    return 0;
+}
+
 static int fd_sink_put(void *ctx, int c) {
     int fd = *(int *)ctx;
-    char b = (char)c;
-    return (write(fd, &b, 1) == 1) ? 0 : -1;
+    if (fd_buf_n >= FD_BUF_SZ) {
+        if (fd_flush(fd) < 0) return -1;
+    }
+    fd_buf[fd_buf_n++] = (char)c;
+    if (c == '\n') {
+        if (fd_flush(fd) < 0) return -1;
+    }
+    return 0;
 }
 
 /* Buffer sink: writes at most cap-1 bytes, then the caller NUL-
@@ -354,9 +387,11 @@ static void format_core(struct out *o, const char *fmt, va_list ap) {
 
 int vprintf(const char *fmt, va_list ap) {
     int fd = STDOUT_FILENO;
+    fd_buf_err = 0;
     struct out o = { fd_sink_put, &fd, 0, 0 };
     format_core(&o, fmt, ap);
-    return o.error ? -1 : o.count;
+    if (!o.error) fd_flush(fd);
+    return (o.error || fd_buf_err) ? -1 : o.count;
 }
 
 int printf(const char *fmt, ...) {

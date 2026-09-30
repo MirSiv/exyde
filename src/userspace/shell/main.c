@@ -1,4 +1,4 @@
-/* exshell -- Exyde shell, Phase 12.5.
+/* exshell -- Exyde shell, Phase 12.6.
  *
  * Non-interactive build: stdin still does not work reliably from a
  * WSL tty via QEMU -serial stdio (see EXYDE_PHASES.md 12.1), so
@@ -20,6 +20,11 @@
  * every VFS request carries an absolute path.  The kernel knows
  * nothing about it.
  *
+ * 12.6 adds `run <path>`: reads an ELF from the initrd and
+ * spawns it via SYS_SPAWN_ELF, then waits for the child.  argv
+ * is not propagated -- SYS_SPAWN_ELF takes only a name label
+ * (used as argv[0]).  A fuller exec path comes with Phase 15.
+ *
  * 12.5 adds environment builtins on top of libc/env.c:
  *
  *   env         print all NAME=VALUE pairs
@@ -36,6 +41,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <exyde/micro.h>
+#include <exyde/initrd.h>
 #include <exyde/vfs_client.h>
 
 #define LINE_MAX   256
@@ -145,7 +151,7 @@ static int builtin_echo(int argc, char **argv) {
 
 static int builtin_version(int argc, char **argv) {
     (void)argc; (void)argv;
-    out("exshell 0.1, Phase 12.5\n");
+    out("exshell 0.1, Phase 12.6\n");
     return 0;
 }
 
@@ -386,6 +392,88 @@ static int builtin_unset(int argc, char **argv) {
     return 0;
 }
 
+/* ---- builtins: process ------------------------------------------- */
+
+static int builtin_run(int argc, char **argv) {
+    if (argc < 2) { out("run: missing path\n"); return 1; }
+    char p[PATH_MAX_];
+    if (resolve_path(argv[1], p, sizeof p) != 0) {
+        out("run: path too long\n");
+        return 1;
+    }
+
+    /* Load the whole ELF from VFS into a growable heap buffer. */
+    int fd = vfs_client_open(p, O_RDONLY, 0);
+    if (fd < 0) {
+        out("run: "); out(p); out(": "); out(strerror(errno)); nl();
+        return 1;
+    }
+
+    size_t cap = 64 * 1024;
+    size_t total = 0;
+    char *buf = (char *)malloc(cap);
+    if (!buf) {
+        vfs_client_close(fd);
+        out("run: out of memory\n");
+        return 1;
+    }
+    for (;;) {
+        if (total == cap) {
+            if (cap >= 4u * 1024u * 1024u) {
+                free(buf);
+                vfs_client_close(fd);
+                out("run: file too large\n");
+                return 1;
+            }
+            size_t ncap = cap * 2;
+            char *nb = (char *)realloc(buf, ncap);
+            if (!nb) {
+                free(buf);
+                vfs_client_close(fd);
+                out("run: out of memory\n");
+                return 1;
+            }
+            buf = nb;
+            cap = ncap;
+        }
+        size_t want = cap - total;
+        if (want > 512) want = 512;  /* VFS RPC data cap */
+        long n = vfs_client_read(fd, buf + total, want);
+        if (n < 0) {
+            free(buf);
+            vfs_client_close(fd);
+            out("run: read: "); out(strerror(errno)); nl();
+            return 1;
+        }
+        if (n == 0) break;
+        total += (size_t)n;
+    }
+    vfs_client_close(fd);
+
+    if (total == 0) {
+        free(buf);
+        out("run: empty file\n");
+        return 1;
+    }
+
+    exyde_handle_t h = exyde_spawn_elf(buf, total, argv[1],
+                                       EXYDE_HANDLE_INVALID);
+    free(buf);
+    if (h == EXYDE_HANDLE_INVALID) {
+        out("run: spawn failed: "); out(strerror(errno)); nl();
+        return 1;
+    }
+    int code = exyde_wait(h);
+    exyde_handle_close(h);
+    if (code != 0) {
+        char lbuf[64];
+        snprintf(lbuf, sizeof lbuf, "run: %s: exit %d\n", argv[1], code);
+        out(lbuf);
+        return 1;
+    }
+    return 0;
+}
+
 /* ---- builtin table ----------------------------------------------- */
 
 static const struct builtin builtins[] = {
@@ -399,6 +487,7 @@ static const struct builtin builtins[] = {
     { "rm",      "remove file",                         builtin_rm      },
     { "rmdir",   "remove empty directory",              builtin_rmdir   },
     { "ps",      "list processes",                      builtin_ps      },
+    { "run",     "spawn an initrd program and wait",    builtin_run     },
     { "env",     "print all environment variables",     builtin_env     },
     { "printenv","print one environment variable",      builtin_printenv},
     { "export",  "set an environment variable",         builtin_export  },
@@ -561,6 +650,8 @@ static const char *const script[] = {
     "unset EXYDE_TEST",
     "printenv EXYDE_TEST",
     "echo env tests done",
+    "run /bin/nonexistent",
+    "run /bin/echo",
     "ps",
     "echo unknown-cmd",
     "quit",
@@ -570,7 +661,7 @@ static const char *const script[] = {
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
-    out("exshell 0.1 (non-interactive build, Phase 12.5)\n");
+    out("exshell 0.1 (non-interactive build, Phase 12.6)\n");
     out("type 'help' for the builtin list\n");
 
     /* Attach to the VFS server that init started.  If there is no
