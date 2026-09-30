@@ -40,7 +40,10 @@ struct vfs_req {
     uint64_t arg0;                  /* flags / off / mode / index / len */
     uint64_t arg1;                  /* mode / whence               */
     uint32_t data_len;              /* WRITE: bytes in data[]      */
-    uint32_t _pad;
+    uint32_t client_id;             /* Phase 12.3a: set by the client,
+                                     * assigned by the server on ATTACH;
+                                     * 0 in an ATTACH message.  Replaces
+                                     * the old _pad, same struct size. */
     char     path[VFS_RPC_PATH_MAX];  /* OPEN/MKDIR/UNLINK/RMDIR, NUL-terminated */
     uint8_t  data[VFS_RPC_DATA_MAX];  /* WRITE payload */
 };

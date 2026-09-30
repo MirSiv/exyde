@@ -35,6 +35,8 @@
 #include <stdint.h>
 
 static exyde_handle_t g_console_child = EXYDE_HANDLE_INVALID;
+static exyde_handle_t g_vfs_ch_req    = EXYDE_HANDLE_INVALID;
+static exyde_handle_t g_vfs_child     = EXYDE_HANDLE_INVALID;
 
 /* Spawn a program whose ELF image lives in the kernel-mapped
  * initrd.  `path` is the archive path (e.g. "bin/echo"); `name`
@@ -175,9 +177,8 @@ fail:
 }
 
 static int run_vfs_test(void) {
-    exyde_handle_t ch_req  = exyde_ipc_create(VFS_RPC_MSG_SIZE, 4);
-    exyde_handle_t ch_resp = exyde_ipc_create(VFS_RPC_MSG_SIZE, 4);
-    if (ch_req == EXYDE_HANDLE_INVALID || ch_resp == EXYDE_HANDLE_INVALID) {
+    exyde_handle_t ch_req = exyde_ipc_create(VFS_RPC_MSG_SIZE, 8);
+    if (ch_req == EXYDE_HANDLE_INVALID) {
         printf("init: FAIL vfs channel errno=%d\n", errno);
         return 1;
     }
@@ -186,24 +187,14 @@ static int run_vfs_test(void) {
     if (child == EXYDE_HANDLE_INVALID) {
         printf("init: FAIL spawn exy-vfs errno=%d\n", errno);
         exyde_handle_close(ch_req);
-        exyde_handle_close(ch_resp);
         return 1;
     }
 
-    /* ATTACH: hand ch_resp to the server. */
-    {
-        static uint8_t attach_buf[VFS_RPC_MSG_SIZE];
-        memset(attach_buf, 0, sizeof attach_buf);
-        struct vfs_req *aq = (struct vfs_req *)attach_buf;
-        aq->op = VFS_OP_ATTACH;
-        if (exyde_ipc_send_cap(ch_req, attach_buf, VFS_RPC_MSG_SIZE,
-                               ch_resp, EXYDE_IPC_CAP_DUPLICATE) != 0) {
-            printf("init: FAIL attach errno=%d\n", errno);
-            goto fail;
-        }
-    }
-
-    if (vfs_client_init(ch_req, ch_resp) != 0) {
+    /* vfs_client_init creates our reply channel internally and
+     * sends the ATTACH; the server replies with our client_id.
+     * The same ch_req is later handed to exshell as its bootstrap
+     * capability so exshell can attach as a second client. */
+    if (vfs_client_init(ch_req) != 0) {
         printf("init: FAIL vfs_client_init errno=%d\n", errno);
         goto fail;
     }
@@ -294,22 +285,18 @@ static int run_vfs_test(void) {
         goto fail;
     }
 
-    vfs_client_shutdown();
-    int code = exyde_wait(child);
-    exyde_handle_close(ch_req);
-    exyde_handle_close(ch_resp);
-    exyde_handle_close(child);
-
-    if (code != 0) {
-        printf("init: FAIL exy-vfs exit code %d\n", code);
-        return 1;
-    }
+    /* Keep the VFS server alive: exshell will attach as a second
+     * client on the same ch_req.  Lifecycle is closed at the end
+     * of main() (shutdown + wait + close). */
+    g_vfs_ch_req = ch_req;
+    g_vfs_child  = child;
     printf("init: vfs service OK\n");
     return 0;
 
 fail:
+    vfs_client_shutdown();
+    exyde_wait(child);
     exyde_handle_close(ch_req);
-    exyde_handle_close(ch_resp);
     exyde_handle_close(child);
     return 1;
 }
@@ -379,7 +366,7 @@ static int run_shell(void) {
     printf("init: starting exshell\n");
 
     exyde_handle_t child = spawn_from_initrd("bin/exshell", "exshell",
-                                             EXYDE_HANDLE_INVALID);
+                                             g_vfs_ch_req);
     if (child == EXYDE_HANDLE_INVALID) {
         printf("init: FAIL spawn exshell errno=%d\n", errno);
         return 1;
@@ -417,6 +404,16 @@ int main(int argc, char **argv, char **envp) {
     /* Interactive REPL.  Blocks until the user types "quit"/"exit"
      * or stdin hits EOF. */
     if (run_shell()            != 0) return 1;
+
+    /* Shut down VFS first: exshell has already detached itself, so
+     * after init's SHUTDOWN the server has no clients left and
+     * exits cleanly. */
+    if (g_vfs_ch_req != EXYDE_HANDLE_INVALID) {
+        vfs_client_shutdown();
+        (void)exyde_wait(g_vfs_child);
+        (void)exyde_handle_close(g_vfs_ch_req);
+        (void)exyde_handle_close(g_vfs_child);
+    }
 
     /* Shut down the console server last, and wait for it to actually
      * exit, so that when init's process teardown closes the request

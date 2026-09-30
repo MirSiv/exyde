@@ -3,19 +3,59 @@
 #include <string.h>
 #include <errno.h>
 
-/* Two-channel RPC: requests out on ch_req, replies in on ch_resp.
- * A client never reads from ch_req and the server never reads from
- * ch_resp, so neither side can pull its own message back. */
-static exyde_handle_t rpc_req  = EXYDE_HANDLE_INVALID;
-static exyde_handle_t rpc_resp = EXYDE_HANDLE_INVALID;
+/* Multiplexed VFS client (Phase 12.3a).
+ *
+ * Requests go out on ch_req, a channel shared by every client of the
+ * same server.  Replies come back on ch_resp, which this client
+ * created and handed to the server via an ATTACH capability.  The
+ * server tags the ATTACH reply with an assigned client_id; that id
+ * is stamped into every subsequent request so the server knows
+ * which ch_resp to answer on and which per-client fd table to use. */
 
-int vfs_client_init(exyde_handle_t ch_req, exyde_handle_t ch_resp) {
-    if (ch_req  == EXYDE_HANDLE_INVALID ||
-        ch_resp == EXYDE_HANDLE_INVALID) {
-        errno = EINVAL; return -1;
+static exyde_handle_t rpc_req   = EXYDE_HANDLE_INVALID;
+static exyde_handle_t rpc_resp  = EXYDE_HANDLE_INVALID;
+static uint32_t       client_id = 0;
+
+int vfs_client_init(exyde_handle_t ch_req) {
+    if (ch_req == EXYDE_HANDLE_INVALID) {
+        errno = EINVAL;
+        return -1;
     }
-    rpc_req  = ch_req;
-    rpc_resp = ch_resp;
+
+    exyde_handle_t ch_resp = exyde_ipc_create(VFS_RPC_MSG_SIZE, 4);
+    if (ch_resp == EXYDE_HANDLE_INVALID) {
+        return -1;
+    }
+
+    static uint8_t attach_buf[VFS_RPC_MSG_SIZE];
+    memset(attach_buf, 0, sizeof attach_buf);
+    struct vfs_req *aq = (struct vfs_req *)attach_buf;
+    aq->op = VFS_OP_ATTACH;
+
+    if (exyde_ipc_send_cap(ch_req, attach_buf, VFS_RPC_MSG_SIZE,
+                           ch_resp, EXYDE_IPC_CAP_DUPLICATE) != 0) {
+        exyde_handle_close(ch_resp);
+        return -1;
+    }
+
+    /* The ATTACH reply carries the assigned client_id in aux. */
+    static uint8_t rsp_buf[VFS_RPC_MSG_SIZE];
+    int n = exyde_ipc_recv(ch_resp, rsp_buf, VFS_RPC_MSG_SIZE);
+    if (n != (int)VFS_RPC_MSG_SIZE) {
+        exyde_handle_close(ch_resp);
+        errno = EIO;
+        return -1;
+    }
+    struct vfs_rsp *r = (struct vfs_rsp *)rsp_buf;
+    if (r->ret < 0) {
+        exyde_handle_close(ch_resp);
+        errno = (int)-r->ret;
+        return -1;
+    }
+
+    rpc_req   = ch_req;
+    rpc_resp  = ch_resp;
+    client_id = (uint32_t)r->aux;
     return 0;
 }
 
@@ -31,8 +71,11 @@ static int rpc(const struct vfs_req *q, struct vfs_rsp *r_out) {
     static uint8_t tx[VFS_RPC_MSG_SIZE];
     static uint8_t rx[VFS_RPC_MSG_SIZE];
 
+    struct vfs_req lq = *q;
+    lq.client_id = client_id;
+
     memset(tx, 0, sizeof tx);
-    memcpy(tx, q, sizeof *q);
+    memcpy(tx, &lq, sizeof lq);
 
     if (exyde_ipc_send(rpc_req, tx, VFS_RPC_MSG_SIZE) != 0) {
         return -1;

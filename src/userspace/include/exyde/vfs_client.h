@@ -16,7 +16,12 @@
  * in flight at any time.  fd values are u32 opaque tokens minted by
  * the server. */
 
-int  vfs_client_init(exyde_handle_t ch_req, exyde_handle_t ch_resp);
+/* Initialise the VFS client.  ch_req is the request channel to
+ * the server (the same channel shared by every client).  On success
+ * the client has created its private reply channel internally,
+ * sent an ATTACH carrying it, and stored the assigned client_id
+ * which is stamped into every subsequent request. */
+int  vfs_client_init(exyde_handle_t ch_req);
 
 int  vfs_client_open(const char *path, uint32_t flags, uint32_t mode);
 int  vfs_client_close(int fd);
