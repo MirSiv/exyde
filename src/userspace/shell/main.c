@@ -1,4 +1,4 @@
-/* exshell -- Exyde shell, Phase 12.3a.
+/* exshell -- Exyde shell, Phase 12.3b.
  *
  * Non-interactive build: stdin still does not work reliably from a
  * WSL tty via QEMU -serial stdio (see EXYDE_PHASES.md 12.1), so
@@ -8,17 +8,17 @@
  * is then a three-line change (replace the script loop with
  * read_line()).
  *
- * 12.3a: exshell attaches to the VFS server that init started, as
- * a second client.  init hands us its own VFS request channel as
- * the bootstrap capability; vfs_client_init creates a private
- * reply channel, sends ATTACH, and stores the assigned client_id.
- * A short VFS demo runs at the end of the fixed script.
+ * 12.3b adds the filesystem builtins on top of the multiplexed
+ * VFS from 12.3a:
  *
- * Architecture (kept deliberately close to a real shell):
+ *   pwd    cd    ls    cat    mkdir    rmdir    rm    touch
  *
- *     line  ->  tokenize()  ->  argv[]  ->  dispatch()  ->  builtin
- *
- * Filesystem builtins proper land in 12.3b. */
+ * plus a minimal '>' redirection for echo, used by the test script
+ * (and by anyone wanting to put text in a file without a separate
+ * editor).  Relative paths are resolved against the shell's own
+ * cwd; there is no chdir syscall, the cwd lives in userspace and
+ * every VFS request carries an absolute path.  The kernel knows
+ * nothing about it. */
 
 #include <unistd.h>
 #include <string.h>
@@ -27,8 +27,19 @@
 #include <exyde/micro.h>
 #include <exyde/vfs_client.h>
 
-#define LINE_MAX  256
-#define ARGS_MAX  16
+#define LINE_MAX   256
+#define ARGS_MAX    16
+#define PATH_MAX_  256
+
+/* VFS open flags (mirror vfs_internal.h). */
+#define O_RDONLY   0x0001u
+#define O_WRONLY   0x0002u
+#define O_CREAT    0x0100u
+#define O_TRUNC    0x0400u
+
+/* ---- shell state ------------------------------------------------- */
+
+static char cwd[PATH_MAX_] = "/";
 
 /* ---- I/O helpers ------------------------------------------------- */
 
@@ -40,7 +51,69 @@ static void nl(void) {
     write(1, "\n", 1);
 }
 
-/* ---- builtins ---------------------------------------------------- */
+/* ---- path resolution --------------------------------------------- */
+
+/* Collapse '.' and '..' segments, drop empty ones, ensure a leading
+ * slash.  `/a/b/../c` -> `/a/c`, `/..` -> `/`, `//x` -> `/x`. */
+static int normalize_path(const char *in, char *outv, size_t cap) {
+    static char buf[PATH_MAX_ * 2];
+    size_t l = strlen(in);
+    if (l >= sizeof buf) return -1;
+    memcpy(buf, in, l + 1);
+
+    const char *stack[32];
+    int depth = 0;
+
+    char *p = buf;
+    while (*p) {
+        while (*p == '/') ++p;
+        if (!*p) break;
+        char *start = p;
+        while (*p && *p != '/') ++p;
+        if (*p) *p++ = '\0';
+
+        if (strcmp(start, ".") == 0) continue;
+        if (strcmp(start, "..") == 0) {
+            if (depth > 0) depth--;
+            continue;
+        }
+        if (depth >= 32) return -1;
+        stack[depth++] = start;
+    }
+
+    size_t o = 0;
+    if (cap < 2) return -1;
+    outv[o++] = '/';
+    for (int i = 0; i < depth; ++i) {
+        size_t sl = strlen(stack[i]);
+        if (o + sl + 1 >= cap) return -1;
+        memcpy(outv + o, stack[i], sl); o += sl;
+        outv[o++] = '/';
+    }
+    if (o > 1) o--;              /* strip trailing '/' unless root */
+    outv[o] = '\0';
+    return 0;
+}
+
+/* Turn `rel` into an absolute path by prepending cwd unless it is
+ * already absolute.  Result is normalized. */
+static int resolve_path(const char *rel, char *outv, size_t cap) {
+    char tmp[PATH_MAX_ * 2];
+    if (rel[0] == '/') {
+        if (strlen(rel) >= sizeof tmp) return -1;
+        strcpy(tmp, rel);
+    } else {
+        size_t cl = strlen(cwd);
+        size_t rl = strlen(rel);
+        if (cl + 1 + rl >= sizeof tmp) return -1;
+        memcpy(tmp, cwd, cl);
+        if (cl == 0 || tmp[cl - 1] != '/') tmp[cl++] = '/';
+        memcpy(tmp + cl, rel, rl + 1);
+    }
+    return normalize_path(tmp, outv, cap);
+}
+
+/* ---- builtins: core ---------------------------------------------- */
 
 typedef int (*builtin_fn)(int argc, char **argv);
 
@@ -61,14 +134,176 @@ static int builtin_echo(int argc, char **argv) {
 
 static int builtin_version(int argc, char **argv) {
     (void)argc; (void)argv;
-    out("exshell 0.1, Phase 12.3a\n");
+    out("exshell 0.1, Phase 12.3b\n");
     return 0;
 }
 
 static int builtin_help(int argc, char **argv);
 
+/* ---- builtins: filesystem ---------------------------------------- */
+
+static int builtin_pwd(int argc, char **argv) {
+    (void)argc; (void)argv;
+    out(cwd);
+    nl();
+    return 0;
+}
+
+static int builtin_cd(int argc, char **argv) {
+    if (argc < 2) {
+        strcpy(cwd, "/");
+        return 0;
+    }
+    char p[PATH_MAX_];
+    if (resolve_path(argv[1], p, sizeof p) != 0) {
+        out("cd: path too long\n");
+        return 1;
+    }
+    int fd = vfs_client_open(p, O_RDONLY, 0);
+    if (fd < 0) {
+        out("cd: "); out(p); out(": "); out(strerror(errno)); nl();
+        return 1;
+    }
+    /* Distinguish directory from regular file by trying readdir at
+     * index 0: empty dir -> ENOENT, populated dir -> success,
+     * regular file -> ENOTDIR. */
+    char name[128];
+    errno = 0;
+    int r = vfs_client_readdir(fd, 0, name, sizeof name);
+    if (r != 0 && errno != ENOENT) {
+        out("cd: "); out(p); out(": not a directory\n");
+        vfs_client_close(fd);
+        return 1;
+    }
+    vfs_client_close(fd);
+    strcpy(cwd, p);
+    return 0;
+}
+
+static int builtin_ls(int argc, char **argv) {
+    const char *arg = (argc >= 2) ? argv[1] : ".";
+    char p[PATH_MAX_];
+    if (resolve_path(arg, p, sizeof p) != 0) {
+        out("ls: path too long\n");
+        return 1;
+    }
+    int fd = vfs_client_open(p, O_RDONLY, 0);
+    if (fd < 0) {
+        out("ls: "); out(p); out(": "); out(strerror(errno)); nl();
+        return 1;
+    }
+    char name[128];
+    for (uint32_t i = 0; ; ++i) {
+        errno = 0;
+        if (vfs_client_readdir(fd, i, name, sizeof name) != 0) {
+            if (errno == ENOENT) break;
+            out("ls: readdir error\n");
+            vfs_client_close(fd);
+            return 1;
+        }
+        out(name);
+        nl();
+    }
+    vfs_client_close(fd);
+    return 0;
+}
+
+static int builtin_cat(int argc, char **argv) {
+    if (argc < 2) { out("cat: missing file\n"); return 1; }
+    char p[PATH_MAX_];
+    if (resolve_path(argv[1], p, sizeof p) != 0) {
+        out("cat: path too long\n");
+        return 1;
+    }
+    int fd = vfs_client_open(p, O_RDONLY, 0);
+    if (fd < 0) {
+        out("cat: "); out(p); out(": "); out(strerror(errno)); nl();
+        return 1;
+    }
+    char buf[512];
+    for (;;) {
+        long n = vfs_client_read(fd, buf, sizeof buf);
+        if (n < 0) {
+            out("cat: read error\n");
+            vfs_client_close(fd);
+            return 1;
+        }
+        if (n == 0) break;
+        if (write(1, buf, (size_t)n) != n) {
+            vfs_client_close(fd);
+            return 1;
+        }
+    }
+    vfs_client_close(fd);
+    return 0;
+}
+
+static int builtin_mkdir(int argc, char **argv) {
+    if (argc < 2) { out("mkdir: missing path\n"); return 1; }
+    char p[PATH_MAX_];
+    if (resolve_path(argv[1], p, sizeof p) != 0) {
+        out("mkdir: path too long\n"); return 1;
+    }
+    if (vfs_client_mkdir(p, 0755) != 0) {
+        out("mkdir: "); out(p); out(": "); out(strerror(errno)); nl();
+        return 1;
+    }
+    return 0;
+}
+
+static int builtin_rmdir(int argc, char **argv) {
+    if (argc < 2) { out("rmdir: missing path\n"); return 1; }
+    char p[PATH_MAX_];
+    if (resolve_path(argv[1], p, sizeof p) != 0) {
+        out("rmdir: path too long\n"); return 1;
+    }
+    if (vfs_client_rmdir(p) != 0) {
+        out("rmdir: "); out(p); out(": "); out(strerror(errno)); nl();
+        return 1;
+    }
+    return 0;
+}
+
+static int builtin_rm(int argc, char **argv) {
+    if (argc < 2) { out("rm: missing path\n"); return 1; }
+    char p[PATH_MAX_];
+    if (resolve_path(argv[1], p, sizeof p) != 0) {
+        out("rm: path too long\n"); return 1;
+    }
+    if (vfs_client_unlink(p) != 0) {
+        out("rm: "); out(p); out(": "); out(strerror(errno)); nl();
+        return 1;
+    }
+    return 0;
+}
+
+static int builtin_touch(int argc, char **argv) {
+    if (argc < 2) { out("touch: missing file\n"); return 1; }
+    char p[PATH_MAX_];
+    if (resolve_path(argv[1], p, sizeof p) != 0) {
+        out("touch: path too long\n"); return 1;
+    }
+    int fd = vfs_client_open(p, O_CREAT | O_WRONLY, 0644);
+    if (fd < 0) {
+        out("touch: "); out(p); out(": "); out(strerror(errno)); nl();
+        return 1;
+    }
+    vfs_client_close(fd);
+    return 0;
+}
+
+/* ---- builtin table ----------------------------------------------- */
+
 static const struct builtin builtins[] = {
     { "echo",    "print arguments",                     builtin_echo    },
+    { "pwd",     "print working directory",             builtin_pwd     },
+    { "cd",      "change directory",                    builtin_cd      },
+    { "ls",      "list directory contents",             builtin_ls      },
+    { "cat",     "print file contents",                 builtin_cat     },
+    { "mkdir",   "create directory",                    builtin_mkdir   },
+    { "touch",   "create empty file",                   builtin_touch   },
+    { "rm",      "remove file",                         builtin_rm      },
+    { "rmdir",   "remove empty directory",              builtin_rmdir   },
     { "help",    "list builtins, or 'help <name>'",     builtin_help    },
     { "version", "print shell version",                 builtin_version },
 };
@@ -86,26 +321,21 @@ static int builtin_help(int argc, char **argv) {
     if (argc >= 2) {
         const struct builtin *b = find_builtin(argv[1]);
         if (!b) {
-            out(argv[1]);
-            out(": no such builtin\n");
+            out(argv[1]); out(": no such builtin\n");
             return 1;
         }
-        out(b->name);
-        out(" - ");
-        out(b->help);
-        nl();
+        out(b->name); out(" - "); out(b->help); nl();
         return 0;
     }
     out("builtins:\n");
     for (int i = 0; i < BUILTIN_COUNT; ++i) {
-        out("  ");
-        out(builtins[i].name);
-        out(" - ");
-        out(builtins[i].help);
+        out("  "); out(builtins[i].name);
+        out(" - "); out(builtins[i].help);
         nl();
     }
     out("  quit    exit the shell\n");
     out("  exit    alias for quit\n");
+    out("  echo <text> > <file>   write text to file\n");
     return 0;
 }
 
@@ -124,6 +354,41 @@ static int tokenize(char *line, char **argv, int max) {
     return n;
 }
 
+/* ---- echo with '>' redirect -------------------------------------- */
+
+/* argv looks like: echo w0 w1 ... w(K-1) > file   with argv[K] == ">"
+ * and argv[K+1] the path.  Writes the words joined by single spaces
+ * plus a trailing newline. */
+static int echo_to_file(int redir, int argc, char **argv) {
+    (void)argc;
+    char path[PATH_MAX_];
+    if (resolve_path(argv[redir + 1], path, sizeof path) != 0) {
+        out("echo: path too long\n");
+        return 1;
+    }
+    int fd = vfs_client_open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (fd < 0) {
+        out("echo: "); out(path); out(": "); out(strerror(errno)); nl();
+        return 1;
+    }
+    for (int i = 1; i < redir; ++i) {
+        if (i > 1) {
+            if (vfs_client_write(fd, " ", 1) != 1) {
+                vfs_client_close(fd); out("echo: write failed\n"); return 1;
+            }
+        }
+        size_t l = strlen(argv[i]);
+        if (vfs_client_write(fd, argv[i], l) != (long)l) {
+            vfs_client_close(fd); out("echo: write failed\n"); return 1;
+        }
+    }
+    if (vfs_client_write(fd, "\n", 1) != 1) {
+        vfs_client_close(fd); out("echo: write failed\n"); return 1;
+    }
+    vfs_client_close(fd);
+    return 0;
+}
+
 /* ---- dispatch ---------------------------------------------------- */
 
 #define DISPATCH_QUIT (-1)
@@ -134,10 +399,22 @@ static int dispatch(int argc, char **argv) {
     if (strcmp(argv[0], "quit") == 0 || strcmp(argv[0], "exit") == 0)
         return DISPATCH_QUIT;
 
+    /* '>' redirection, currently only supported for echo (12.3b). */
+    if (strcmp(argv[0], "echo") == 0) {
+        for (int i = 1; i < argc; ++i) {
+            if (strcmp(argv[i], ">") == 0) {
+                if (i + 1 >= argc) {
+                    out("echo: missing redirection target\n");
+                    return 1;
+                }
+                return echo_to_file(i, argc, argv);
+            }
+        }
+    }
+
     const struct builtin *b = find_builtin(argv[0]);
     if (!b) {
-        out(argv[0]);
-        out(": command not found\n");
+        out(argv[0]); out(": command not found\n");
         return 127;
     }
     return b->fn(argc, argv);
@@ -152,87 +429,46 @@ static int run_line(const char *src) {
     memcpy(buf, src, n);
     buf[n] = '\0';
 
-    out("exyde> ");
-    out(buf);
-    nl();
+    out("exyde> "); out(buf); nl();
 
     char *argv[ARGS_MAX];
     int argc = tokenize(buf, argv, ARGS_MAX);
     return dispatch(argc, argv);
 }
 
-/* The Phase 12.3a build runs a fixed script.  Interactive mode is
+/* The Phase 12.3b build runs a fixed script.  Interactive mode is
  * deferred to Phase 13 (keyboard driver server). */
 static const char *const script[] = {
     "help",
-    "echo hello, exshell",
-    "echo Exyde microkernel",
-    "version",
-    "help echo",
+    "pwd",
+    "mkdir /tmp",
+    "cd /tmp",
+    "pwd",
+    "touch notes.txt",
+    "echo hello from exshell > notes.txt",
+    "ls",
+    "cat notes.txt",
+    "echo second line overwrites > notes.txt",
+    "cat notes.txt",
+    "rm notes.txt",
+    "ls",
+    "cd /",
+    "rmdir /tmp",
+    "pwd",
     "echo unknown-cmd",
     "quit",
     (const char *)0,
 };
 
-/* 12.3a: exercise the second-client VFS attach.  Real filesystem
- * builtins (ls / cat / mkdir / rm / cd) land in 12.3b. */
-static void vfs_demo(void) {
-    out("exshell: VFS demo\n");
-
-    if (vfs_client_mkdir("/shell-test", 0755) != 0) {
-        out("exshell:   mkdir /shell-test FAILED\n");
-        return;
-    }
-    out("exshell:   mkdir /shell-test ok\n");
-
-    int fd = vfs_client_open("/shell-test/hello",
-                             0x0102 /* O_CREAT|O_WRONLY */, 0644);
-    if (fd < 0) {
-        out("exshell:   open(w) FAILED\n");
-        return;
-    }
-    const char *msg = "from exshell";
-    if (vfs_client_write(fd, msg, 12) != 12) {
-        out("exshell:   write FAILED\n");
-        vfs_client_close(fd);
-        return;
-    }
-    vfs_client_close(fd);
-    out("exshell:   wrote /shell-test/hello\n");
-
-    fd = vfs_client_open("/shell-test/hello", 0x0001 /* O_RDONLY */, 0);
-    if (fd < 0) {
-        out("exshell:   open(r) FAILED\n");
-        return;
-    }
-    char buf[32];
-    long n = vfs_client_read(fd, buf, 12);
-    vfs_client_close(fd);
-    if (n != 12) {
-        out("exshell:   read FAILED\n");
-        return;
-    }
-    buf[12] = 0;
-    if (strcmp(buf, "from exshell") != 0) {
-        out("exshell:   content mismatch\n");
-        return;
-    }
-    out("exshell:   read back ok\n");
-
-    vfs_client_unlink("/shell-test/hello");
-    vfs_client_rmdir("/shell-test");
-    out("exshell:   cleaned up\n");
-}
-
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
 
-    out("exshell 0.1 (non-interactive build, Phase 12.3a)\n");
+    out("exshell 0.1 (non-interactive build, Phase 12.3b)\n");
     out("type 'help' for the builtin list\n");
 
     /* Attach to the VFS server that init started.  If there is no
-     * bootstrap capability (running standalone, say), skip the VFS
-     * demo and continue with builtins only. */
+     * bootstrap capability (running standalone, say), skip the
+     * filesystem builtins and continue with the rest. */
     int have_vfs = 0;
     exyde_handle_t ch_vfs = exyde_get_bootstrap();
     if (ch_vfs != EXYDE_HANDLE_INVALID) {
@@ -249,7 +485,6 @@ int main(int argc, char **argv, char **envp) {
     for (int i = 0; script[i] != (const char *)0; ++i) {
         int rc = run_line(script[i]);
         if (rc == DISPATCH_QUIT) {
-            if (have_vfs) vfs_demo();
             out("exshell: bye\n");
             if (have_vfs) vfs_client_shutdown();
             return 0;

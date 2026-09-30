@@ -5,22 +5,17 @@
 #include <stddef.h>
 #include <exyde/micro.h>
 
-/* Client side of the VFS RPC protocol.
+/* Client side of the VFS RPC protocol (multiplexed, Phase 12.3a).
  *
- * Initialise once with vfs_client_init(ch_req, ch_resp).  ch_req
- * is the channel handed to exy-vfs as its bootstrap; the client
- * first sends VFS_OP_ATTACH on it, carrying ch_resp as a capability.
- * ch_resp is the channel the server will use for all replies.
+ * Initialise once with vfs_client_init(ch_req).  ch_req is the
+ * request channel shared by every client of the same server.  On
+ * success the client has created its private reply channel
+ * internally, sent ATTACH carrying it, and stored the assigned
+ * client_id which is stamped into every subsequent request.
  *
  * The client is single-threaded and synchronous: at most one RPC is
  * in flight at any time.  fd values are u32 opaque tokens minted by
- * the server. */
-
-/* Initialise the VFS client.  ch_req is the request channel to
- * the server (the same channel shared by every client).  On success
- * the client has created its private reply channel internally,
- * sent an ATTACH carrying it, and stored the assigned client_id
- * which is stamped into every subsequent request. */
+ * the server, namespaced per client. */
 int  vfs_client_init(exyde_handle_t ch_req);
 
 int  vfs_client_open(const char *path, uint32_t flags, uint32_t mode);
